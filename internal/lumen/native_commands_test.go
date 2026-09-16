@@ -76,11 +76,11 @@ func TestScreenCommandPopupShowsInputHints(t *testing.T) {
 	}
 }
 
-func TestBottomStatusEmbedsCarolline(t *testing.T) {
+func TestBottomStatusEmbedsCoralline(t *testing.T) {
 	frontend := &ui{screenMode: true, cwd: "/tmp/project", thread: threadSummary{Model: "gpt-test"}}
 	plain := stripANSI(frontend.screenFrame(100, 16))
-	if !strings.Contains(plain, "carolline") {
-		t.Fatalf("bottom status missing carolline: %q", plain)
+	if !strings.Contains(plain, "coralline") {
+		t.Fatalf("bottom status missing coralline: %q", plain)
 	}
 }
 

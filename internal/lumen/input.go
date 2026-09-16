@@ -105,7 +105,7 @@ func (u *ui) screenCursorPosition(width, height int) (int, int, bool) {
 	}
 	line := inputLines[lineIndex]
 	column := displayWidth(string(u.input[line.start:minInt(u.cursor, line.end)]))
-	return height - len(composer) + composerLine, 5 + column, true
+	return height - (u.screenDockRowCount() - 1) - len(composer) + composerLine, 5 + column, true
 }
 
 func (u *ui) screenInputRequestCursorPosition(composer []string, width, height int) (int, int, bool) {
@@ -135,7 +135,7 @@ func (u *ui) screenInputRequestCursorPosition(composer []string, width, height i
 	if composerLine >= len(composer)-1 {
 		return 0, 0, false
 	}
-	return height - len(composer) + 1 + composerLine, 5 + column, true
+	return height - (u.screenDockRowCount() - 1) - len(composer) + 1 + composerLine, 5 + column, true
 }
 
 func wrappedCursorPosition(value []rune, cursor, width int) (int, int) {

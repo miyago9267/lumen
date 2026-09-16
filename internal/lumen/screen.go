@@ -271,6 +271,7 @@ func (u *ui) runFullscreen(initialPrompt string) error {
 
 func (u *ui) renderScreen() {
 	width, height := terminalSize()
+	u.refreshCoralline(width)
 	fmt.Fprint(u.out, "\x1b[?25l\x1b[H", u.screenFrame(width, height))
 	if row, column, ok := u.screenCursorPosition(width, height); ok {
 		fmt.Fprintf(u.out, "\x1b[%d;%dH\x1b[?25h", row, column)
@@ -288,7 +289,7 @@ func terminalSize() (int, int) {
 func (u *ui) screenComposerAndBodyRows(width, height int) ([]string, int) {
 	composer := u.screenComposerLines(width)
 	composer = trimComposerLines(composer, maxScreenComposerLines(height))
-	bodyRows := height - 3 - screenComposerGapRows - len(composer)
+	bodyRows := height - 2 - screenComposerGapRows - len(composer) - u.screenDockRowCount()
 	if bodyRows < 1 {
 		bodyRows = 1
 	}
@@ -381,7 +382,7 @@ func (u *ui) screenFrame(width, height int) string {
 		lines = append(lines, "")
 	}
 	lines = append(lines, composer...)
-	lines = append(lines, u.screenDockLine(width))
+	lines = append(lines, u.screenDockLines(width)...)
 
 	var builder strings.Builder
 	for index, line := range lines {
@@ -840,6 +841,20 @@ func (u *ui) screenDockLine(width int) string {
 		dock += "  ·  " + footer
 	}
 	return screenStyledLine(screenEvent, dock, width)
+}
+
+func (u *ui) screenDockRowCount() int {
+	if u.corallineLine != "" {
+		return 2
+	}
+	return 1
+}
+
+func (u *ui) screenDockLines(width int) []string {
+	if u.corallineLine == "" {
+		return []string{u.screenDockLine(width)}
+	}
+	return []string{padCoralline(u.corallineLine, width), u.screenDockLine(width)}
 }
 
 func (u *ui) screenAdd(kind screenBlockKind, text string) {

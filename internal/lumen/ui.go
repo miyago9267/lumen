@@ -305,9 +305,13 @@ type userInputRequest struct {
 }
 
 type threadUsage struct {
-	totalTokens        int64
-	modelContextWindow int64
-	hasContextWindow   bool
+	totalTokens              int64
+	inputTokens              int64
+	outputTokens             int64
+	cacheReadInputTokens     int64
+	cacheCreationInputTokens int64
+	modelContextWindow       int64
+	hasContextWindow         bool
 }
 
 type turnRecap struct {
@@ -389,6 +393,10 @@ type ui struct {
 	connectionStatusEntry string
 	reconnectAttempt      int
 	reconnectRetryPending bool
+	corallineRenderer     corallineRenderer
+	corallineLine         string
+	corallineSnapshot     string
+	corallineError        string
 	serverFactory         func() (*appServer, error)
 }
 
@@ -405,6 +413,7 @@ func newUI(client *appServer, thread threadSummary, cwd string, fullscreen bool,
 		in:                 os.Stdin,
 		clipboard:          writeClipboard,
 		hoverRow:           -1,
+		corallineRenderer:  newCorallineRenderer(),
 		serverFactory:      startAppServer,
 		expandedToolGroups: make(map[string]bool),
 	}
@@ -1078,13 +1087,25 @@ func (u *ui) handleNotification(message rpcMessage) {
 			ThreadID   string `json:"threadId"`
 			TokenUsage struct {
 				Total struct {
-					TotalTokens int64 `json:"totalTokens"`
+					TotalTokens              int64 `json:"totalTokens"`
+					InputTokens              int64 `json:"inputTokens"`
+					OutputTokens             int64 `json:"outputTokens"`
+					CachedInputTokens        int64 `json:"cachedInputTokens"`
+					CacheReadInputTokens     int64 `json:"cacheReadInputTokens"`
+					CacheCreationInputTokens int64 `json:"cacheCreationInputTokens"`
 				} `json:"total"`
 				ModelContextWindow *int64 `json:"modelContextWindow"`
 			} `json:"tokenUsage"`
 		}
 		if json.Unmarshal(message.Params, &params) == nil && params.ThreadID == u.thread.ID {
 			u.usage.totalTokens = params.TokenUsage.Total.TotalTokens
+			u.usage.inputTokens = params.TokenUsage.Total.InputTokens
+			u.usage.outputTokens = params.TokenUsage.Total.OutputTokens
+			u.usage.cacheReadInputTokens = params.TokenUsage.Total.CacheReadInputTokens
+			if u.usage.cacheReadInputTokens == 0 {
+				u.usage.cacheReadInputTokens = params.TokenUsage.Total.CachedInputTokens
+			}
+			u.usage.cacheCreationInputTokens = params.TokenUsage.Total.CacheCreationInputTokens
 			if params.TokenUsage.ModelContextWindow != nil {
 				u.usage.modelContextWindow = *params.TokenUsage.ModelContextWindow
 				u.usage.hasContextWindow = true

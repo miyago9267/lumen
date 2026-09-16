@@ -5,7 +5,7 @@ import (
 	"strings"
 )
 
-const statusBarBrand = "carolline"
+const statusBarBrand = "coralline"
 
 type slashCommand struct {
 	name               string

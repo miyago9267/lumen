@@ -22,7 +22,7 @@ full-screen app shell 操作體驗，並保留 scrollback fallback。
 
 本階段的 product direction 是 hybrid UX：輸入框以上採 Grok 式的 conversation
 workspace 使用感；輸入框以下採 Claude Code 式的 compact session/control dock，
-嵌入 Lumen 的 `carolline` identity。借用 interaction patterns，不搬運任何
+嵌入 Lumen 的 `coralline` statusline。借用 interaction patterns，不搬運任何
 provider 的品牌、畫面資產或 shortcut parity。
 
 ## Requirements
@@ -77,8 +77,12 @@ provider 的品牌、畫面資產或 shortcut parity。
 - `lumen <native-subcommand> ...` 與 `lumen codex ...` 必須將官方 Codex CLI 的
   stdin/stdout/stderr、arguments 與 exit code 交給原生 binary，並保留 Lumen 自己的
   `--help`、`--version` entrypoint。
-- full-screen bottom status label 必須固定包含 `carolline`，並保留目前的 model、effort、
+- full-screen bottom status label 必須固定包含 `coralline`，並保留目前的 model、effort、
   approval 或 turn state。
+- 若本機存在 `Nanako0129/coralline` 的 `statusline.sh`，dock 第一列必須把 Lumen 的
+  cwd、model、effort 與 context usage 映射成它的 stdin JSON payload，並顯示 renderer
+  的 ANSI statusline；renderer 缺少、timeout 或失敗時必須保留 native dock，不得讓
+  session 中止，也不得改寫 Claude Code settings。
 - app-server EOF、transport error 或單一 UI event handler panic 不得直接結束 fullscreen
   session；transcript、composer 與明確的退出操作必須保留。
 - app-server 斷線後，frontend 必須以 bounded backoff 嘗試重新啟動 app-server 並 resume
@@ -97,7 +101,8 @@ Full-screen mode 的垂直順序固定為：
 │                                               │
 │ Fixed composer                                │
 ├──────────────────────────────────────────────┤
-│ carolline control dock                        │
+│ Coralline statusline (when available)         │
+│ coralline control dock                        │
 │ session state / model / mode / attention      │
 └──────────────────────────────────────────────┘
 ```
@@ -107,13 +112,13 @@ Full-screen mode 的垂直順序固定為：
 - Composer 是唯一的 prompt input owner；transcript click、command popup、
   approval 與 user-input request 都只能改變 composer state，不得另開第二個
   input surface。
-- `carolline control dock` 是下方固定的 session control surface，不是第二份
-  transcript。它可以顯示 compact status、attention、queue count、connection
-  state 與可用 shortcut。
+- `coralline control dock` 是下方固定的 session control surface，不是第二份
+  transcript。可用時第一列是外部 Coralline statusline projection，第二列是 Lumen
+  的 compact status、attention、queue count、connection state 與 shortcut。
 - Dock 不得把 user / assistant message、tool output 或 reasoning 重新渲染一次；
   detailed content 一律留在 upper workspace 的 projection。
 - Dock 預設維持 1–2 rows；窄 terminal 以 priority order 壓縮欄位，但固定保留
-  `carolline`、connection / turn state 與目前可操作的 attention。
+  `coralline`、connection / turn state 與目前可操作的 attention。
 
 ### Upper workspace interaction
 
@@ -130,10 +135,12 @@ Full-screen mode 的垂直順序固定為：
 - `Enter`、`Ctrl+Enter`、`Alt+Enter`、`Shift+Enter`、history、queue 與 interrupt
   的語意沿用現有 Lumen contract；hybrid layout 不新增第二套輸入模型。
 
-### Lower carolline dock interaction
+### Lower coralline dock interaction
 
-- stable：顯示 `carolline`、model、effort、approval、sandbox、cwd、thread name
+- stable：顯示 `coralline`、model、effort、approval、sandbox、cwd、thread name
   的可壓縮摘要。
+- renderer available：第一列只承載 Coralline stdout projection；它不取得 raw
+  app-server channel，也不新增 transcript entry。
 - working：顯示 turn state、queued prompt count 與目前 attention；不複製
   assistant stream。
 - needs input：顯示 approval 或 tool user-input 的可操作提示；完整問題與 options
@@ -262,13 +269,19 @@ Full-screen mode 的垂直順序固定為：
     把不能執行的 slash text 送進 model；Lumen 的 interactive shell 仍保留自己的
     dashboard/help controls。
   - **By:** Miyago (2026-09-16)
-- **Fixed status branding:** `carolline` 是 bottom status label 的固定文字，和 dynamic
+- **Fixed status branding:** `coralline` 是 bottom status label 的固定文字，和 dynamic
   model/turn state 並列。
   - **Reason:** status bar 需要穩定可辨識的 embedded label，不把 branding 混進 Codex
     config 或 app-server state。
   - **By:** Miyago (2026-09-16)
+- **External renderer adapter:** Lumen 只呼叫本機的 Coralline Bash statusline，傳入
+  Claude-compatible stdin JSON，並把 stdout 的 SGR-safe projection 放在 control dock
+  上方；renderer path 可由 `LUMEN_CORALLINE_STATUSLINE` 覆蓋。
+  - **Reason:** 直接使用 Miyago 已配置的 Coralline theme / segments，避免複製第三方
+    renderer source、接管 Claude settings，且 renderer 故障時可以回到 native dock。
+  - **By:** Miyago (2026-09-16)
 - **Hybrid shell split:** composer 上方是 Grok-inspired conversation workspace，
-  composer 下方是 compact `carolline` control dock；兩者只共享 canonical session
+  composer 下方是 compact `coralline` control dock；兩者只共享 canonical session
   state，不共享第二份 rendered transcript。
   - **Reason:** 把 Grok 的主要閱讀與輸入節奏，和 Claude-style 的 session attention
     / control visibility 放在各自清楚的 surface；Lumen 保留自己的 visual language。
@@ -329,7 +342,7 @@ Full-screen mode 的垂直順序固定為：
 - [x] Phase 5b.7: user-input option selector、`isOther` custom answer 與 question
   composer navigation
 - [x] Phase 5e: native Codex slash catalog、popup completion、common app-server command
-  actions、CLI subcommand passthrough 與 `carolline` bottom status label
+  actions、CLI subcommand passthrough 與 `coralline` bottom status label
 - [x] Phase 5f: role-scoped transcript blocks、app-server reconnect backoff 與 panic-safe
   fullscreen lifecycle
 - [x] Phase 5b.8: per-turn cards、follow-up click target 與 turn-level fork action
@@ -338,7 +351,7 @@ Full-screen mode 的垂直順序固定為：
   parity
   與 richer session controls
 <!-- markdownlint-disable MD013 -->
-- [x] Phase 6: hybrid Grok-above / Claude-carolline-below UX
+- [x] Phase 6: hybrid Grok-above / Claude-coralline-below UX
   - [x] Phase 6.1: freeze upper workspace、composer 與 lower dock layout contract
   - [x] Phase 6.2: extract `TerminalLifecycle` single-owner setup / restore seam
   - [x] Phase 6.3: extract `SessionSupervisor` attach、single-flight reconnect、
@@ -351,6 +364,13 @@ Full-screen mode 的垂直順序固定為：
     retaining animation、resize 與 manual redraw timers
   - [x] Phase 6.7: run PTY、fake app-server、screen model、long-transcript and
     attended UX acceptance checks
+- [x] Phase 7: actual Nanako0129/coralline renderer integration
+  - [x] Phase 7.1: map Lumen session state to Coralline stdin JSON and project its
+    SGR-safe stdout above the native control dock
+  - [x] Phase 7.2: add renderer discovery override、timeout、retry、success cache and
+    native fallback
+  - [x] Phase 7.3: verify installed renderer output、two-row layout、cursor placement and
+    reconnect / clean-exit PTY behavior
 
 目前 Phase 3 已有 approval、interrupt、CLI `/resume` 與明確的 model、reasoning、
 sandbox、approval overrides；Phase 5b.9 已補上 interactive resume picker、跨 cwd
@@ -371,6 +391,7 @@ catalog、popup 與 common command actions，但部分 Codex UI-only slash actio
 | Hybrid rendering | `screen.go`, `ui.go`, `input.go` | upper/lower projection | fixed-size screen model snapshots |
 | Tool disclosure | `transcript.go`, `screen.go` | `toolGroup` projection | hidden, hover, expand and copy tests |
 | Render efficiency | `screen.go`, `ui.go` | dirty invalidation | idle and long-transcript counters |
+| Coralline projection | `coralline.go`, `screen.go`, `ui.go` | shell renderer adapter | payload, ANSI sanitization, fallback and PTY tests |
 
 The planned files are seams, not a request for a broad rewrite. The first implementation
 may keep existing `ui` and `screenBlock` callers while moving ownership behind small
@@ -403,9 +424,13 @@ available to an explicit detail view and recovery replay.
   dock never overlays composer or transcript rows.
 - Upper rows are generated from canonical entries plus `ViewState`; lower rows are
   generated from `DockState`. No renderer reads raw app-server channels directly.
-- Dock compression order is: keep `carolline` → connection / attention → turn state →
+- Dock compression order is: keep `coralline` → connection / attention → turn state →
   model / effort → approval / sandbox → cwd / thread. Hidden fields remain available
   through `/status` or an explicit detail action.
+- When the external renderer is available, its row is a disposable projection keyed by
+  terminal width and current session payload. SGR color is retained; cursor movement,
+  screen clearing, OSC hyperlinks and other terminal-control sequences are removed.
+  A failed render is retryable on the next invalidation and never owns session lifecycle.
 - `toolGroup` is the only default aggregation boundary. A group cannot cross turns,
   pending approval, user-input request or error boundary.
 - Hover changes emphasis or exposes a compact tooltip only. Detail expansion is also
@@ -439,8 +464,9 @@ available to an explicit detail view and recovery replay.
 
 ### Planning assumptions
 
-- Miyago 提到的 `coralline` 先對應 repo 既有 canonical label `carolline`；若是
-  另一個 brand，需另開命名與 asset scope，不混入本次 UX implementation。
+- `coralline` 對應 `Nanako0129/coralline` 的 statusline renderer；Lumen 只接它的
+  stdin JSON payload 與 stdout ANSI projection，不複製 renderer source 或改寫 Claude
+  Code settings。
 - 「輸入框以下」解讀為 composer 下方的固定 control dock；它不是第二份 transcript
   或第二個 prompt editor。
 
@@ -471,7 +497,7 @@ available to an explicit detail view and recovery replay.
   separation、hover tooltip、Markdown/Mermaid preview、Dashboard preview 與
   queue/cancel-and-send parsing。
 - [x] native command catalog、popup key handling、app-server command dispatch、CLI
-  passthrough exit code 與固定 `carolline` status label tests。
+  passthrough exit code 與固定 `coralline` status label tests。
 - [x] unit test verified compact welcome rendering for a fresh fullscreen thread。
 - [x] selection/copy、editor boundary navigation、reasoning animation 與 normalized
   package build evidence。
@@ -496,6 +522,11 @@ available to an explicit detail view and recovery replay.
   boundaries、scroll-away follow preservation 與 dirty event rendering。
 - [x] fake app-server PTY smoke verified backend termination → `reconnecting` →
   `reconnected` → double `Ctrl-C` clean exit without losing the mounted composer。
+- [x] Coralline adapter tests verify stdin payload mapping、SGR-only output projection、
+  failed-render retry、success cache、two-row dock 與 cursor reservation。
+- [x] installed `/Users/miyago/.local/bin/lumen` PTY smoke verifies the actual local
+  `/Users/miyago/.claude/coralline/statusline.sh` model segment together with reconnect
+  and clean exit。
 - approval-producing write turn、fresh-context verification 與後續 UX tuning remain
   open。
 
@@ -515,7 +546,7 @@ available to an explicit detail view and recovery replay.
 以下項目全部通過前，Phase 6 不得標記完成：
 
 - [x] fixed-size screen model 在正常 terminal height 下保留 upper workspace、
-  composer 與 1–2 row `carolline` dock，三者不重疊。
+  composer 與 1–2 row `coralline` dock，三者不重疊。
 - [x] upper workspace 維持 user / assistant 分離、Grok-style queue / steer、
   bounded scroll、manual fold、hover affordance 與既有 follow-up actions。
 - [x] lower dock 在 idle、working、queued、needs-input、reconnecting、detached
@@ -529,6 +560,19 @@ available to an explicit detail view and recovery replay.
 - [x] PTY、fake app-server、screen model、race、長 transcript benchmark 與 attended
   smoke 全部通過，且既有 app-server protocol / approval / sandbox tests 無回歸。
 
+## Coralline renderer acceptance slice
+
+- [x] Lumen discovers the local Coralline Bash renderer or an explicit
+  `LUMEN_CORALLINE_STATUSLINE` path。
+- [x] Coralline receives cwd、model、effort and available context usage through its
+  stdin JSON contract；Lumen does not write Claude settings。
+- [x] Renderer stdout is constrained to text and SGR color sequences；a timeout or
+  dependency failure returns to the native control dock and remains retryable。
+- [x] The renderer row reserves one terminal row above the native dock without moving
+  the composer cursor into the wrong row。
+- [x] Real installed-renderer PTY smoke confirms the projected model segment、reconnect
+  recovery and clean terminal exit。
+
 ## Phase 6 planned files
 
 - `internal/lumen/lifecycle.go` - `TerminalLifecycle` setup, restore and recovery seam
@@ -540,6 +584,8 @@ available to an explicit detail view and recovery replay.
   viewport and row grouping
 - `internal/lumen/ui.go`, `input.go`, `turn_input.go` - dock actions, focus and
   existing queue / interrupt semantics
+- `internal/lumen/coralline.go` - local renderer discovery, payload adapter, ANSI-safe
+  projection, timeout and fallback seam
 - `internal/lumen/*_test.go` - screen snapshots, projection fixtures, PTY and
   fake app-server acceptance tests
 <!-- markdownlint-enable MD013 -->

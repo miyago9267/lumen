@@ -39,9 +39,18 @@ lumen codex mcp list
 
 在 interactive TTY 中，預設會進入 alternate screen。上方是 branch、cwd、thread
 metadata 與 context usage，中間是可捲動的 conversation workspace；輸入框固定在
-transcript 下方，最底下是獨立的 `carolline` control dock，顯示 turn state、attention、
-queue、connection 與 shortcuts。Dock 不會重複 user、assistant 或 tool transcript；離開
-後，已完成的內容不會留在 shell scrollback 裡。
+transcript 下方；最底下是獨立的 `coralline` dock：若本機有 renderer，第一列顯示 Coralline
+statusline，第二列顯示 Lumen 的 turn state、attention、queue、connection 與 shortcuts。
+Dock 不會重複 user、assistant 或 tool transcript；離開後，已完成的內容不會留在 shell
+scrollback 裡。
+
+Lumen 會使用 [Nanako0129/coralline](https://github.com/Nanako0129/coralline) 的
+statusline renderer contract。若存在 `~/.claude/coralline/statusline.sh`，就把目前的
+cwd、model、effort 與 context usage 以 stdin JSON 傳入，將 renderer 的 ANSI output
+投影到 dock；Lumen 不會複製 renderer source，也不會改寫 `~/.claude/settings.json` 或
+`coralline.conf`。找不到 renderer、依賴缺失或 renderer timeout 時，保留 native dock。
+可用 `LUMEN_CORALLINE_STATUSLINE=/path/to/statusline.sh` 指定路徑，
+或設為 `off` 停用。
 
 每個 `you`、`assistant`、`tool`、`plan` 和 `status` content block 都有獨立的 inline
 label；文字 label 會直接標出來源，user / assistant 也會用 cyan / green 區分。外層
@@ -100,8 +109,10 @@ scrollback 行為。
 - `lumen <native-subcommand> ...` 會把官方 CLI subcommand、stdin/stdout/stderr 與 exit
   code 原樣交給 `codex`；也可用 `lumen codex ...` 作為明確前綴。`lumen --help`、
   `lumen --version` 仍保留 Lumen 自己的入口資訊。
-- Full-screen 底部 status label 固定包含 `carolline`，並繼續顯示 model、effort、
+- Full-screen 底部 status label 固定包含 `coralline`，並繼續顯示 model、effort、
   approval 或 turn state。
+- 若本機存在 Coralline Bash renderer，full-screen dock 第一列會顯示它的實際 theme /
+  segments；renderer 失敗時回到 native fallback，不影響 session。
 - approval request 只會使用 server 明確提供的 choices；不會自動允許
 - tool user-input request 會在 composer 裡逐題收集答案；options 可用 `↑/↓` 或 `1–9`
   選取，`isOther` 可直接輸入額外答案；`isSecret` question 只會顯示 masking 字元

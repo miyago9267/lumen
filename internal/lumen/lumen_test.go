@@ -560,15 +560,15 @@ func TestScreenDockSitsBelowComposer(t *testing.T) {
 	if composerBottom < 0 || composerBottom+1 >= len(lines) {
 		t.Fatalf("composer bottom or dock missing: %q", lines)
 	}
-	if strings.Contains(lines[composerBottom], "carolline") {
-		t.Fatalf("carolline status is still embedded in composer border: %q", lines[composerBottom])
+	if strings.Contains(lines[composerBottom], "coralline") {
+		t.Fatalf("coralline status is still embedded in composer border: %q", lines[composerBottom])
 	}
-	if !strings.Contains(lines[composerBottom+1], "carolline") || !strings.Contains(lines[composerBottom+1], "Enter send") {
+	if !strings.Contains(lines[composerBottom+1], "coralline") || !strings.Contains(lines[composerBottom+1], "Enter send") {
 		t.Fatalf("dock does not combine status and controls: %q", lines[composerBottom+1])
 	}
 }
 
-func TestCarollineDockProjectsAttentionWithoutTranscriptDuplication(t *testing.T) {
+func TestCorallineDockProjectsAttentionWithoutTranscriptDuplication(t *testing.T) {
 	frontend := &ui{
 		screenMode: true,
 		cwd:        "/tmp/project",
@@ -584,7 +584,7 @@ func TestCarollineDockProjectsAttentionWithoutTranscriptDuplication(t *testing.T
 	frontend.screenAdd(screenAssistant, "assistant answer")
 	lines := strings.Split(stripANSI(frontend.screenFrame(120, 18)), "\r\n")
 	dock := lines[len(lines)-1]
-	if !strings.Contains(dock, "carolline") || strings.Contains(dock, "assistant answer") {
+	if !strings.Contains(dock, "coralline") || strings.Contains(dock, "assistant answer") {
 		t.Fatalf("idle dock = %q", dock)
 	}
 	header := stripANSI(frontend.screenHeaderLine(120))
@@ -620,6 +620,50 @@ func TestCarollineDockProjectsAttentionWithoutTranscriptDuplication(t *testing.T
 	dock = stripANSI(frontend.screenDockLine(120))
 	if !strings.Contains(dock, "detached") || !strings.Contains(dock, "app-server unavailable") {
 		t.Fatalf("detached dock = %q", dock)
+	}
+}
+
+func TestCorallineRendererIsProjectedAboveControlDock(t *testing.T) {
+	var payload corallineStatusPayload
+	frontend := &ui{
+		screenMode: true,
+		cwd:        "/tmp/project",
+		thread: threadSummary{
+			Model:           "gpt-test",
+			ReasoningEffort: "medium",
+		},
+		corallineRenderer: corallineRendererFunc(func(width int, got corallineStatusPayload) (string, error) {
+			if width != 100 {
+				t.Fatalf("coralline width = %d, want 100", width)
+			}
+			payload = got
+			return "\x1b[38;5;81m⟦ CORALLINE model ctx ⟧\x1b[0m", nil
+		}),
+	}
+
+	frontend.refreshCoralline(100)
+	lines := strings.Split(stripANSI(frontend.screenFrame(100, 16)), "\r\n")
+	if len(lines) < 2 || !strings.Contains(lines[len(lines)-2], "CORALLINE") {
+		t.Fatalf("coralline projection missing above control dock: %q", lines)
+	}
+	if !strings.Contains(lines[len(lines)-1], "coralline") {
+		t.Fatalf("control dock missing below coralline renderer: %q", lines)
+	}
+	if payload.Workspace.CurrentDir != "/tmp/project" || payload.Model.DisplayName != "gpt-test" {
+		t.Fatalf("coralline payload = %#v", payload)
+	}
+}
+
+func TestCorallineOutputKeepsSGRAndDropsTerminalControl(t *testing.T) {
+	value := "\x1b[38;5;81mstatus\x1b[0m\x1b[2J\x1b]8;;https://example.invalid\aopen\x1b]8;;\a"
+	got := sanitizeCorallineOutput(value)
+	if !strings.Contains(got, "status") || !strings.Contains(got, "\x1b[38;5;81m") {
+		t.Fatalf("sanitized coralline output lost text or SGR: %q", got)
+	}
+	for _, unsafe := range []string{"\x1b[2J", "https://example.invalid", "\x1b]"} {
+		if strings.Contains(got, unsafe) {
+			t.Fatalf("sanitized coralline output kept %q: %q", unsafe, got)
+		}
 	}
 }
 
@@ -1592,7 +1636,7 @@ func TestScreenFrameClampsFailedResizeDimensions(t *testing.T) {
 	if lines := strings.Split(frame, "\r\n"); len(lines) != 8 {
 		t.Fatalf("clamped screen frame lines = %d, want 8", len(lines))
 	}
-	if !strings.Contains(frame, "draft") || !strings.Contains(frame, "carolline") {
+	if !strings.Contains(frame, "draft") || !strings.Contains(frame, "coralline") {
 		t.Fatalf("clamped screen frame lost mounted state: %q", frame)
 	}
 }
