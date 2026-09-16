@@ -1,4 +1,4 @@
-package main
+package lumen
 
 import (
 	"fmt"
@@ -8,7 +8,7 @@ import (
 
 var (
 	mermaidNodePattern = regexp.MustCompile(`([A-Za-z][A-Za-z0-9_-]*)\s*\[([^\]]+)\]`)
-	mermaidEdgePattern = regexp.MustCompile(`([A-Za-z][A-Za-z0-9_-]*)\s*(?:-->|---|==>|-.->)\s*([A-Za-z][A-Za-z0-9_-]*)`)
+	mermaidEdgePattern = regexp.MustCompile(`([A-Za-z][A-Za-z0-9_-]*)\s*(?:\[[^\]]+\])?\s*(?:-->|---|==>|-.->)\s*([A-Za-z][A-Za-z0-9_-]*)`)
 )
 
 func markdownContentLines(value string) []screenContentLine {

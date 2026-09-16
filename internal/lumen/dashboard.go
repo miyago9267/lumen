@@ -1,4 +1,4 @@
-package main
+package lumen
 
 import (
 	"fmt"
@@ -37,7 +37,7 @@ func (u *ui) refreshDashboard() error {
 		u.dashboardRows = []threadSummary{u.thread}
 		return nil
 	}
-	threads, err := u.client.ListThreads(u.cwd, maxDashboardSessions)
+	threads, err := u.client.ListThreads("", maxDashboardSessions)
 	if err != nil {
 		return fmt.Errorf("list sessions: %w", err)
 	}
@@ -91,6 +91,11 @@ func (u *ui) handleDashboardKey(key keyEvent) error {
 		if u.dashboardIndex >= len(u.dashboardRows) {
 			u.dashboardIndex = maxInt(0, len(u.dashboardRows)-1)
 		}
+	case keyCtrlU:
+		u.dashboardIndex -= 3
+		if u.dashboardIndex < 0 {
+			u.dashboardIndex = 0
+		}
 	case keyRune:
 		if key.rune >= '1' && key.rune <= '9' {
 			index := int(key.rune - '1')
@@ -139,10 +144,12 @@ func (u *ui) attachDashboard(index int) error {
 		u.dashboardError = "attach failed · " + err.Error()
 		return nil
 	}
+	u.endScreenTurn()
+	u.clearReplyTarget()
 	u.thread = resumed
 	u.cwd = valueOr(resumed.CWD, u.cwd)
 	u.branch = gitBranch(u.cwd)
-	u.screenBlocks = nil
+	u.clearScreenTranscript()
 	u.scrollOffset = 0
 	u.hoverText = ""
 	u.usage = threadUsage{}
@@ -151,6 +158,7 @@ func (u *ui) attachDashboard(index int) error {
 	u.assistant = false
 	u.tool = false
 	u.toolOutput = false
+	u.showWelcome = len(resumed.Turns) == 0
 	u.dashboard = false
 	u.dashboardError = ""
 	u.renderHistory()
@@ -172,10 +180,12 @@ func (u *ui) startDashboardSession() error {
 		u.dashboardError = "new session failed · " + err.Error()
 		return nil
 	}
+	u.endScreenTurn()
+	u.clearReplyTarget()
 	u.thread = thread
 	u.cwd = valueOr(thread.CWD, u.cwd)
 	u.branch = gitBranch(u.cwd)
-	u.screenBlocks = nil
+	u.clearScreenTranscript()
 	u.scrollOffset = 0
 	u.hoverText = ""
 	u.usage = threadUsage{}
@@ -184,6 +194,7 @@ func (u *ui) startDashboardSession() error {
 	u.assistant = false
 	u.tool = false
 	u.toolOutput = false
+	u.showWelcome = len(thread.Turns) == 0
 	u.dashboard = false
 	u.dashboardError = ""
 	u.screenAdd(screenEvent, "new session · "+shortID(thread.ID))
@@ -192,10 +203,10 @@ func (u *ui) startDashboardSession() error {
 
 func (u *ui) screenDashboardRows(width int) []screenTranscriptRow {
 	rows := []screenTranscriptRow{{
-		rendered: screenStyledLine(screenInfo, "dashboard  ·  session supervisor", width),
-		tooltip:  "dashboard · top-level Codex sessions",
+		rendered: screenStyledLine(screenInfo, "dashboard  ·  session supervisor  ·  all sessions", width),
+		tooltip:  "resume picker · all top-level Codex sessions",
 	}, {
-		rendered: screenStyledLine(screenStatus, "  peek · attach · new session · refresh", width),
+		rendered: screenStyledLine(screenStatus, "  resume history · attach · new session · refresh", width),
 		tooltip:  "dashboard controls",
 	}}
 	if u.dashboardError != "" {
@@ -227,8 +238,10 @@ func (u *ui) screenDashboardRows(width int) []screenTranscriptRow {
 		name := valueOr(strings.TrimSpace(thread.Name), "unnamed")
 		state := valueOr(threadStatusLabel(thread), lastTurnStatus(thread))
 		state = valueOr(state, "idle")
+		cwd := valueOr(strings.TrimSpace(thread.CWD), "cwd unknown")
+		cwd = truncateDisplay(sanitizeText(displayCWD(cwd)), 24)
 		preview := valueOr(threadPreview(thread), "no preview yet")
-		line := fmt.Sprintf("%s%d  %-16s  %-10s  %s", marker, index+1, truncateDisplay(name, 16), truncateDisplay(state, 10), preview)
+		line := fmt.Sprintf("%s%d  %-16s  %-10s  %-24s  %s", marker, index+1, truncateDisplay(name, 16), truncateDisplay(state, 10), cwd, preview)
 		rows = append(rows, screenTranscriptRow{
 			rendered: screenStyledLine(kind, truncateDisplay(line, width), width),
 			tooltip:  fmt.Sprintf("session %s · %s · %s", shortID(thread.ID), name, preview),

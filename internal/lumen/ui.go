@@ -1,4 +1,4 @@
-package main
+package lumen
 
 import (
 	"bufio"
@@ -15,7 +15,7 @@ import (
 	"golang.org/x/term"
 )
 
-const cursor = '▌'
+const cursor = '█'
 
 var (
 	reset  = "\x1b[0m"
@@ -35,6 +35,8 @@ func init() {
 
 var errQuit = errors.New("quit")
 
+const ctrlCConfirmationWindow = 2 * time.Second
+
 type keyType int
 
 const (
@@ -42,6 +44,7 @@ const (
 	keyEnter
 	keyCtrlEnter
 	keyAltEnter
+	keyShiftEnter
 	keyBackspace
 	keyLeft
 	keyRight
@@ -55,12 +58,15 @@ const (
 	keyScrollDown
 	keyMouseClick
 	keyMouseMove
+	keyMouseRelease
 	keyCtrlC
 	keyCtrlX
 	keyCtrlO
+	keyCtrlU
 	keyCtrlBackslash
 	keyCtrlD
 	keyEscape
+	keyTab
 )
 
 type keyEvent struct {
@@ -85,6 +91,8 @@ func readKeys(input io.Reader, keys chan<- keyEvent) {
 			keys <- keyEvent{typ: keyCtrlX}
 		case 15:
 			keys <- keyEvent{typ: keyCtrlO}
+		case 21:
+			keys <- keyEvent{typ: keyCtrlU}
 		case 28:
 			keys <- keyEvent{typ: keyCtrlBackslash}
 		case 4:
@@ -93,6 +101,8 @@ func readKeys(input io.Reader, keys chan<- keyEvent) {
 			keys <- keyEvent{typ: keyEnter}
 		case 8, 127:
 			keys <- keyEvent{typ: keyBackspace}
+		case '\t':
+			keys <- keyEvent{typ: keyTab}
 		case 27:
 			readEscape(reader, input, keys)
 		default:
@@ -178,34 +188,50 @@ func parseModifiedKey(sequence string) (keyEvent, bool) {
 	if strings.HasSuffix(sequence, "u") {
 		fields := strings.Split(strings.TrimSuffix(sequence, "u"), ";")
 		if len(fields) == 2 && fields[0] == "13" {
-			modifier, err := strconv.Atoi(fields[1])
-			if err == nil && modifier&4 != 0 {
-				return keyEvent{typ: keyCtrlEnter}, true
+			if key, ok := modifiedEnterKey(fields[1]); ok {
+				return keyEvent{typ: key}, true
 			}
 		}
 	}
 	if strings.HasSuffix(sequence, "~") {
 		fields := strings.Split(strings.TrimSuffix(sequence, "~"), ";")
 		if len(fields) == 2 && fields[1] == "13" {
-			modifier, err := strconv.Atoi(fields[0])
-			if err == nil && modifier&4 != 0 {
-				return keyEvent{typ: keyCtrlEnter}, true
+			if key, ok := modifiedEnterKey(fields[0]); ok {
+				return keyEvent{typ: key}, true
 			}
 		}
 		if len(fields) == 3 && fields[0] == "27" && fields[2] == "13" {
-			modifier, err := strconv.Atoi(fields[1])
-			if err == nil && modifier&4 != 0 {
-				return keyEvent{typ: keyCtrlEnter}, true
+			if key, ok := modifiedEnterKey(fields[1]); ok {
+				return keyEvent{typ: key}, true
 			}
 		}
 	}
 	return keyEvent{}, false
 }
 
+func modifiedEnterKey(rawModifier string) (keyType, bool) {
+	modifier, err := strconv.Atoi(rawModifier)
+	if err != nil || modifier < 2 {
+		return keyEscape, false
+	}
+	modifier--
+	if modifier&4 != 0 {
+		return keyCtrlEnter, true
+	}
+	if modifier&1 != 0 {
+		return keyShiftEnter, true
+	}
+	if modifier&2 != 0 {
+		return keyAltEnter, true
+	}
+	return keyEscape, false
+}
+
 func parseSGRMouse(sequence string) (keyEvent, bool) {
-	if len(sequence) < 6 || sequence[0] != '<' || sequence[len(sequence)-1] != 'M' {
+	if len(sequence) < 6 || sequence[0] != '<' || (sequence[len(sequence)-1] != 'M' && sequence[len(sequence)-1] != 'm') {
 		return keyEvent{}, false
 	}
+	release := sequence[len(sequence)-1] == 'm'
 	fields := strings.Split(sequence[1:len(sequence)-1], ";")
 	if len(fields) != 3 {
 		return keyEvent{}, false
@@ -221,6 +247,9 @@ func parseSGRMouse(sequence string) (keyEvent, bool) {
 	y, err := strconv.Atoi(fields[2])
 	if err != nil {
 		return keyEvent{}, false
+	}
+	if release {
+		return keyEvent{typ: keyMouseRelease, mouseX: x, mouseY: y}, true
 	}
 	if button&64 != 0 {
 		if button&3 == 0 {
@@ -267,10 +296,12 @@ type userInputAnswer struct {
 }
 
 type userInputRequest struct {
-	id        json.RawMessage
-	questions []userInputQuestion
-	answers   map[string]userInputAnswer
-	index     int
+	id          json.RawMessage
+	questions   []userInputQuestion
+	answers     map[string]userInputAnswer
+	index       int
+	optionIndex int
+	otherInput  []rune
 }
 
 type threadUsage struct {
@@ -286,6 +317,18 @@ type turnRecap struct {
 	fileChanges int
 }
 
+type screenPoint struct {
+	row int
+	col int
+}
+
+type screenSelection struct {
+	start    screenPoint
+	end      screenPoint
+	active   bool
+	dragging bool
+}
+
 type ui struct {
 	client     *appServer
 	thread     threadSummary
@@ -296,46 +339,74 @@ type ui struct {
 	in         io.Reader
 	overrides  runtimeOverrides
 
-	input          []rune
-	cursor         int
-	promptLines    int
-	busy           bool
-	turnID         string
-	assistant      bool
-	tool           bool
-	toolOutput     bool
-	shortcuts      bool
-	showToolOutput bool
-	dashboard      bool
-	dashboardRows  []threadSummary
-	dashboardIndex int
-	dashboardError string
-	approval       *approvalRequest
-	inputRequest   *userInputRequest
-	inputHistory   []string
-	historyIndex   int
-	savedInput     []rune
-	queuedPrompts  []string
-	cancelAndSend  string
-	lastOutput     time.Time
-	branch         string
-	screenBlocks   []screenBlock
-	usage          threadUsage
-	scrollOffset   int
-	recap          turnRecap
-	hoverText      string
+	input                 []rune
+	cursor                int
+	promptLines           int
+	busy                  bool
+	turnID                string
+	assistant             bool
+	tool                  bool
+	toolOutput            bool
+	shortcuts             bool
+	showToolOutput        bool
+	showWelcome           bool
+	reasoningActive       bool
+	reasoningShown        bool
+	reasoningFrame        uint8
+	dashboard             bool
+	dashboardRows         []threadSummary
+	dashboardIndex        int
+	dashboardError        string
+	approval              *approvalRequest
+	inputRequest          *userInputRequest
+	inputHistory          []string
+	historyIndex          int
+	savedInput            []rune
+	queuedPrompts         []string
+	cancelAndSend         string
+	commandPopupIndex     int
+	commandPopupDismissed bool
+	lastOutput            time.Time
+	lastCtrlC             time.Time
+	branch                string
+	transcript            canonicalTranscript
+	screenBlocks          []screenBlock
+	activeScreenTurnKey   string
+	activeScreenTurnID    string
+	screenTurnSequence    int
+	toolGroupSequence     int
+	toolGroupBoundary     uint64
+	expandedToolGroups    map[string]bool
+	replyTarget           screenTurnTarget
+	usage                 threadUsage
+	scrollOffset          int
+	recap                 turnRecap
+	hoverText             string
+	hoverRow              int
+	selection             screenSelection
+	clipboard             func(string) error
+	connectionError       string
+	connectionStatusEntry string
+	reconnectAttempt      int
+	reconnectRetryPending bool
+	serverFactory         func() (*appServer, error)
 }
 
 func newUI(client *appServer, thread threadSummary, cwd string, fullscreen bool, overrides runtimeOverrides) *ui {
 	return &ui{
-		client:       client,
-		thread:       thread,
-		cwd:          cwd,
-		fullscreen:   fullscreen,
-		overrides:    overrides,
-		historyIndex: -1,
-		out:          os.Stdout,
-		in:           os.Stdin,
+		client:             client,
+		thread:             thread,
+		cwd:                cwd,
+		fullscreen:         fullscreen,
+		overrides:          overrides,
+		showWelcome:        fullscreen && len(thread.Turns) == 0,
+		historyIndex:       -1,
+		out:                os.Stdout,
+		in:                 os.Stdin,
+		clipboard:          writeClipboard,
+		hoverRow:           -1,
+		serverFactory:      startAppServer,
+		expandedToolGroups: make(map[string]bool),
 	}
 }
 
@@ -349,15 +420,14 @@ func (u *ui) run(initialPrompt string) error {
 
 func (u *ui) runInline(initialPrompt string, interactive bool) error {
 	if interactive {
-		state, err := term.MakeRaw(int(os.Stdin.Fd()))
-		if err != nil {
+		lifecycle := newInlineTerminalLifecycle(int(os.Stdin.Fd()), u.out)
+		if err := lifecycle.Enter(); err != nil {
 			return fmt.Errorf("enable raw terminal: %w", err)
 		}
-		defer term.Restore(int(os.Stdin.Fd()), state)
+		defer lifecycle.Close()
 	}
 
-	fmt.Fprint(u.out, "\x1b[?25l")
-	defer fmt.Fprint(u.out, "\x1b[?25h\n")
+	client := u.client
 
 	u.renderHeader()
 	u.renderHistory()
@@ -382,31 +452,42 @@ func (u *ui) runInline(initialPrompt string, interactive bool) error {
 			if !ok {
 				return nil
 			}
-			if err := u.handleKey(key); errors.Is(err, errQuit) {
+			err := u.safeUIError("handle key", func() error { return u.handleKey(key) })
+			if errors.Is(err, errQuit) {
 				return nil
 			} else if err != nil {
-				u.printError(err)
+				u.reportUIError(err)
 				if !u.busy && u.approval == nil {
 					u.renderPrompt()
 				}
 			}
-		case request := <-u.client.requests:
+		case request, ok := <-client.requests:
+			if !ok {
+				return errors.New("app-server request channel closed")
+			}
 			if !interactive {
-				_ = u.client.respondError(request.id, -32001, "lumen requires an interactive terminal for approval")
+				_ = client.respondError(request.id, -32001, "lumen requires an interactive terminal for approval")
 				return errors.New("approval requires an interactive terminal")
 			}
-			u.handleServerRequest(request)
-		case notification := <-u.client.notifications:
-			u.handleNotification(notification)
+			if err := u.recoverUI("handle server request", func() { u.handleServerRequest(request) }); err != nil {
+				u.printError(err)
+			}
+		case notification, ok := <-client.notifications:
+			if !ok {
+				return errors.New("app-server notification channel closed")
+			}
+			if err := u.recoverUI("handle notification", func() { u.handleNotification(notification) }); err != nil {
+				u.printError(err)
+			}
 			if !interactive && !u.busy {
 				return nil
 			}
-		case err := <-u.client.errors:
+		case err := <-client.errors:
 			if err != nil {
 				u.printError(err)
 				return err
 			}
-		case <-u.client.closed:
+		case <-client.closed:
 			return errors.New("app-server closed")
 		}
 	}
@@ -426,7 +507,7 @@ func (u *ui) renderHeader() {
 		fmt.Fprintf(u.out, " · %sname %s%s", muted, sanitizeText(name), reset)
 	}
 	fmt.Fprintln(u.out)
-	fmt.Fprintf(u.out, "%sEnter%s send · %sAlt+Enter%s newline · %sCtrl-C%s interrupt/quit · %s/help%s\n\n", cyan, reset, cyan, reset, cyan, reset, cyan, reset)
+	fmt.Fprintf(u.out, "%sEnter%s send · %sAlt+Enter%s newline · %sCtrl-C%s twice quit · %s/help%s · %sinline scrollback fallback%s\n\n", cyan, reset, cyan, reset, cyan, reset, cyan, reset, muted, reset)
 }
 
 func (u *ui) effectiveModel() string {
@@ -461,8 +542,12 @@ func (u *ui) renderHistory() {
 			u.screenAdd(screenEvent, fmt.Sprintf("recent history · %d earlier turns hidden", start))
 		}
 		for _, turn := range u.thread.Turns[start:] {
+			turnKey := turn.ID
+			if turnKey == "" {
+				turnKey = u.newScreenTurnKey()
+			}
 			for _, item := range turn.Items {
-				u.renderHistoryItem(item)
+				u.renderScreenHistoryItemForTurn(item, turnKey, turn.ID)
 			}
 		}
 		return
@@ -484,6 +569,7 @@ func (u *ui) renderHistoryItem(item historyItem) {
 		u.renderScreenHistoryItem(item)
 		return
 	}
+	u.renderScreenHistoryItem(item)
 	switch item.Type {
 	case "userMessage":
 		if text := historyText(item.Content); text != "" {
@@ -502,11 +588,10 @@ func (u *ui) renderHistoryItem(item historyItem) {
 			fmt.Fprintln(u.out)
 		}
 		if item.Status != "" {
-			status := sanitizeText(item.Status)
-			if exitCode := numberString(item.ExitCode); exitCode != "" {
-				status = fmt.Sprintf("%s exit %s", status, exitCode)
+			if status := toolCompletionStatus(item.Status, item.ExitCode); status != "" {
+				status = sanitizeText(status)
+				fmt.Fprintf(u.out, "%s  %s%s\n", statusColor(status), status, reset)
 			}
-			fmt.Fprintf(u.out, "%s  %s%s\n", statusColor(status), status, reset)
 		}
 	case "fileChange":
 		if item.Status != "" {
@@ -519,9 +604,7 @@ func (u *ui) renderHistoryItem(item historyItem) {
 			fmt.Fprintf(u.out, "%s  plan%s\n%s\n", cyan, reset, indentText(sanitizeText(item.Text), "    "))
 		}
 	case "reasoning":
-		if len(item.Summary) > 0 {
-			fmt.Fprintf(u.out, "%s  … reasoning: %s%s\n", muted, sanitizeText(strings.Join(item.Summary, " ")), reset)
-		}
+		return
 	}
 }
 
@@ -536,6 +619,9 @@ func historyText(content []historyInput) string {
 }
 
 func (u *ui) handleKey(key keyEvent) error {
+	if key.typ != keyCtrlC {
+		u.lastCtrlC = time.Time{}
+	}
 	if u.screenMode && key.typ == keyCtrlBackslash {
 		if u.approval != nil || u.inputRequest != nil {
 			return nil
@@ -561,6 +647,12 @@ func (u *ui) handleKey(key keyEvent) error {
 		}
 		return nil
 	}
+	if u.screenMode && key.typ == keyCtrlU {
+		return u.openDashboard()
+	}
+	if handled, err := u.handleCommandPopupKey(key); handled {
+		return err
+	}
 	if u.screenMode {
 		if key.typ == keyCtrlO {
 			u.showToolOutput = !u.showToolOutput
@@ -569,45 +661,58 @@ func (u *ui) handleKey(key keyEvent) error {
 		switch key.typ {
 		case keyMouseMove:
 			width, height := terminalSize()
+			if u.selection.dragging {
+				u.updateScreenSelection(key.mouseX, key.mouseY, width, height)
+				return nil
+			}
 			u.updateHover(key.mouseX, key.mouseY, width, height)
 			return nil
 		case keyMouseClick:
 			width, height := terminalSize()
+			if u.beginScreenSelection(key.mouseX, key.mouseY, width, height) {
+				return nil
+			}
 			u.updateHover(key.mouseX, key.mouseY, width, height)
 			u.placeCursorFromMouse(key.mouseX, key.mouseY, width, height)
 			return nil
+		case keyMouseRelease:
+			width, height := terminalSize()
+			return u.finishScreenSelection(key.mouseX, key.mouseY, width, height)
 		case keyPageUp:
-			u.scrollOffset += 8
+			width, height := terminalSize()
+			u.scrollScreenBy(8, width, height)
 			return nil
 		case keyPageDown:
-			u.scrollOffset -= 8
-			if u.scrollOffset < 0 {
-				u.scrollOffset = 0
-			}
+			width, height := terminalSize()
+			u.scrollScreenBy(-8, width, height)
 			return nil
 		case keyScrollUp:
-			u.scrollOffset += 3
+			width, height := terminalSize()
+			u.scrollScreenBy(3, width, height)
 			return nil
 		case keyScrollDown:
-			u.scrollOffset -= 3
-			if u.scrollOffset < 0 {
-				u.scrollOffset = 0
-			}
+			width, height := terminalSize()
+			u.scrollScreenBy(-3, width, height)
 			return nil
 		}
 	}
 	if u.busy {
 		if key.typ == keyCtrlC {
-			if u.turnID == "" {
-				return nil
-			}
-			u.printStatus("interrupt requested", yellow)
-			return u.client.Interrupt(u.thread.ID, u.turnID)
+			return u.handleCtrlC()
 		}
 		if key.typ == keyCtrlEnter {
+			if strings.HasPrefix(strings.TrimSpace(string(u.input)), "/") {
+				return u.handleCommand(string(u.input))
+			}
 			return u.cancelAndSendPrompt()
 		}
 		if key.typ == keyEnter {
+			if strings.HasPrefix(strings.TrimSpace(string(u.input)), "/") {
+				return u.handleCommand(string(u.input))
+			}
+			return u.queuePrompt()
+		}
+		if key.typ == keyTab {
 			return u.queuePrompt()
 		}
 		if u.editComposer(key) {
@@ -617,21 +722,53 @@ func (u *ui) handleKey(key keyEvent) error {
 	}
 
 	switch key.typ {
-	case keyCtrlC, keyCtrlD, keyEscape:
+	case keyCtrlC:
+		return u.handleCtrlC()
+	case keyCtrlD, keyEscape:
+		if key.typ == keyEscape && u.replyTarget.key != "" {
+			u.clearReplyTarget()
+			return nil
+		}
 		return errQuit
 	case keyEnter, keyCtrlEnter:
 		value := strings.TrimSpace(string(u.input))
 		if value != "" {
+			if strings.EqualFold(value, "exit") {
+				return errQuit
+			}
 			if strings.HasPrefix(value, "/") {
 				return u.handleCommand(value)
 			}
 			return u.submit(value)
 		}
-	case keyAltEnter:
+	case keyAltEnter, keyShiftEnter:
 		u.insertRune('\n')
 		u.renderPrompt()
 	default:
 		u.editComposer(key)
+	}
+	return nil
+}
+
+func (u *ui) handleCtrlC() error {
+	now := time.Now()
+	if !u.lastCtrlC.IsZero() && now.Sub(u.lastCtrlC) <= ctrlCConfirmationWindow {
+		u.lastCtrlC = time.Time{}
+		return errQuit
+	}
+	u.lastCtrlC = now
+
+	message := "press Ctrl-C again to exit"
+	if u.busy {
+		message = "interrupt requested · press Ctrl-C again to exit"
+		if u.turnID != "" && u.client != nil {
+			u.printStatus(message, yellow)
+			return u.client.Interrupt(u.thread.ID, u.turnID)
+		}
+	}
+	u.printStatus(message, yellow)
+	if !u.screenMode {
+		u.renderPrompt()
 	}
 	return nil
 }
@@ -663,7 +800,7 @@ func (u *ui) editComposer(key keyEvent) bool {
 		u.movePromptUp()
 	case keyDown:
 		u.movePromptDown()
-	case keyAltEnter:
+	case keyAltEnter, keyShiftEnter:
 		u.insertRune('\n')
 	default:
 		return false
@@ -673,44 +810,56 @@ func (u *ui) editComposer(key keyEvent) bool {
 }
 
 func (u *ui) handleCommand(value string) error {
-	command := strings.Fields(value)
-	if len(command) == 0 {
+	if strings.EqualFold(strings.TrimSpace(value), "exit") {
+		return errQuit
+	}
+	name, args, ok := slashCommandInput(value)
+	if !ok {
 		return nil
 	}
-	switch command[0] {
-	case "/help":
+	command, ok := slashCommandByName(name)
+	if !ok {
+		return fmt.Errorf("unknown command %q; try /help", "/"+name)
+	}
+	u.clearCommandInput()
+	switch command.name {
+	case "help":
 		u.showHelp()
-	case "/status":
+	case "status":
 		u.showStatus()
-	case "/dashboard":
-		u.input = nil
-		u.cursor = 0
+	case "dashboard":
 		return u.openDashboard()
-	case "/quit", "/exit", "/q":
+	case "quit":
 		return errQuit
 	default:
-		return fmt.Errorf("unknown command %q; try /help", command[0])
+		return u.handleNativeCommand(command, args)
 	}
 	return nil
 }
 
+func (u *ui) clearCommandInput() {
+	u.clearPrompt()
+	u.input = nil
+	u.cursor = 0
+	u.commandPopupIndex = 0
+	u.commandPopupDismissed = false
+}
+
 func (u *ui) showHelp() {
+	u.showWelcome = false
 	u.clearPrompt()
 	u.input = nil
 	u.cursor = 0
 	if u.screenMode {
-		u.screenAdd(screenInfo, "commands\n  /help       show this help\n  /status     show thread and policy state\n  /dashboard  supervise top-level sessions\n  /quit       exit without changing the official Codex CLI")
+		u.screenAdd(screenInfo, slashCommandHelpText())
 		return
 	}
-	fmt.Fprintf(u.out, "\n%scommands%s\n", bold, reset)
-	fmt.Fprintf(u.out, "  %s/help%s     show this help\n", cyan, reset)
-	fmt.Fprintf(u.out, "  %s/status%s   show thread and policy state\n", cyan, reset)
-	fmt.Fprintf(u.out, "  %s/quit%s     exit without changing the official Codex CLI\n", cyan, reset)
-	fmt.Fprintln(u.out)
+	fmt.Fprintf(u.out, "\n%s%s%s\n", bold, slashCommandHelpText(), reset)
 	u.renderPrompt()
 }
 
 func (u *ui) showStatus() {
+	u.showWelcome = false
 	u.clearPrompt()
 	u.input = nil
 	u.cursor = 0
@@ -787,6 +936,12 @@ func (u *ui) moveVertical(direction int) {
 }
 
 func (u *ui) submit(value string) error {
+	if u.client == nil {
+		return errors.New("app-server is reconnecting; prompt was not sent")
+	}
+	u.showWelcome = false
+	u.clearSelection()
+	u.clearReplyTarget()
 	u.clearPrompt()
 	u.rememberPrompt(value)
 	u.input = nil
@@ -794,10 +949,13 @@ func (u *ui) submit(value string) error {
 	u.assistant = false
 	u.tool = false
 	u.toolOutput = false
+	u.reasoningActive = false
+	u.reasoningShown = false
+	u.reasoningFrame = 0
 	u.recap = turnRecap{}
-	if u.screenMode {
-		u.screenAdd(screenUser, value)
-	} else {
+	u.beginScreenTurn("")
+	u.screenAdd(screenUser, value)
+	if !u.screenMode {
 		fmt.Fprintf(u.out, "%s› you%s\n%s%s%s\n", bold, reset, muted, sanitizeText(value), reset)
 	}
 	u.busy = true
@@ -811,6 +969,7 @@ func (u *ui) submit(value string) error {
 		return err
 	}
 	u.turnID = turnID
+	u.bindActiveScreenTurn(turnID)
 	return nil
 }
 
@@ -825,6 +984,7 @@ func (u *ui) handleNotification(message rpcMessage) {
 		}
 		if json.Unmarshal(message.Params, &params) == nil && params.ThreadID == u.thread.ID {
 			u.turnID = params.Turn.ID
+			u.bindActiveScreenTurn(params.Turn.ID)
 		}
 	case "item/started":
 		u.handleItemStarted(message.Params)
@@ -834,8 +994,9 @@ func (u *ui) handleNotification(message rpcMessage) {
 			Delta    string `json:"delta"`
 		}
 		if json.Unmarshal(message.Params, &params) == nil && params.ThreadID == u.thread.ID {
+			u.reasoningActive = false
+			u.screenAppend(screenAssistant, params.Delta)
 			if u.screenMode {
-				u.screenAppend(screenAssistant, params.Delta)
 				u.assistant = true
 				u.lastOutput = time.Now()
 				return
@@ -854,16 +1015,17 @@ func (u *ui) handleNotification(message rpcMessage) {
 			Delta    string `json:"delta"`
 		}
 		if json.Unmarshal(message.Params, &params) == nil && params.ThreadID == u.thread.ID {
+			u.reasoningActive = false
 			firstOutput := !u.toolOutput
 			if firstOutput {
 				u.recap.outputs++
 				u.toolOutput = true
 			}
+			if firstOutput {
+				u.screenAdd(screenTool, "output")
+			}
+			u.screenAppend(screenTool, params.Delta)
 			if u.screenMode {
-				if firstOutput {
-					u.screenAdd(screenTool, "output")
-				}
-				u.screenAppend(screenTool, params.Delta)
 				u.tool = true
 				u.lastOutput = time.Now()
 				return
@@ -887,12 +1049,13 @@ func (u *ui) handleNotification(message rpcMessage) {
 			} `json:"plan"`
 		}
 		if json.Unmarshal(message.Params, &params) == nil && params.ThreadID == u.thread.ID {
+			u.reasoningActive = false
+			var planLines []string
+			for _, item := range params.Plan {
+				planLines = append(planLines, fmt.Sprintf("[%s] %s", item.Status, item.Step))
+			}
+			u.screenAdd(screenPlan, strings.Join(planLines, "\n"))
 			if u.screenMode {
-				var planLines []string
-				for _, item := range params.Plan {
-					planLines = append(planLines, fmt.Sprintf("[%s] %s", item.Status, item.Step))
-				}
-				u.screenAdd(screenPlan, strings.Join(planLines, "\n"))
 				return
 			}
 			u.clearPrompt()
@@ -977,14 +1140,15 @@ func (u *ui) handleItemStarted(raw json.RawMessage) {
 	typeName, _ := params.Item["type"].(string)
 	switch typeName {
 	case "commandExecution":
+		u.reasoningActive = false
 		command, _ := params.Item["command"].(string)
 		u.recap.toolCount++
 		u.toolOutput = false
 		if command != "" {
 			u.recap.commands = append(u.recap.commands, command)
 		}
+		u.screenAdd(screenTool, "$ "+command)
 		if u.screenMode {
-			u.screenAdd(screenTool, "$ "+command)
 			u.tool = true
 			u.toolOutput = false
 			return
@@ -993,11 +1157,12 @@ func (u *ui) handleItemStarted(raw json.RawMessage) {
 		fmt.Fprintf(u.out, "\n%s  $ %s%s\n", yellow, sanitizeText(command), reset)
 		u.tool = true
 	case "fileChange":
+		u.reasoningActive = false
 		u.recap.toolCount++
 		u.recap.fileChanges++
 		u.toolOutput = false
+		u.screenAdd(screenTool, "✎ file change")
 		if u.screenMode {
-			u.screenAdd(screenTool, "✎ file change")
 			u.tool = true
 			u.toolOutput = false
 			return
@@ -1006,12 +1171,13 @@ func (u *ui) handleItemStarted(raw json.RawMessage) {
 		fmt.Fprintf(u.out, "\n%s  ✎ file change%s\n", yellow, reset)
 		u.tool = true
 	case "mcpToolCall":
+		u.reasoningActive = false
 		server, _ := params.Item["server"].(string)
 		tool, _ := params.Item["tool"].(string)
 		u.recap.toolCount++
 		u.toolOutput = false
+		u.screenAdd(screenTool, fmt.Sprintf("◇ %s/%s", server, tool))
 		if u.screenMode {
-			u.screenAdd(screenTool, fmt.Sprintf("◇ %s/%s", server, tool))
 			u.tool = true
 			u.toolOutput = false
 			return
@@ -1020,8 +1186,13 @@ func (u *ui) handleItemStarted(raw json.RawMessage) {
 		fmt.Fprintf(u.out, "\n%s  ◇ %s/%s%s\n", yellow, sanitizeText(server), sanitizeText(tool), reset)
 		u.tool = true
 	case "reasoning":
+		if u.reasoningShown {
+			return
+		}
+		u.reasoningShown = true
+		u.reasoningActive = true
+		u.reasoningFrame = 0
 		if u.screenMode {
-			u.screenAdd(screenEvent, "reasoning")
 			return
 		}
 		u.clearPrompt()
@@ -1041,24 +1212,28 @@ func (u *ui) handleItemCompleted(raw json.RawMessage) {
 	switch typeName {
 	case "commandExecution":
 		status, _ := params.Item["status"].(string)
-		exitCode := numberString(params.Item["exitCode"])
-		if exitCode != "" {
-			status = fmt.Sprintf("%s exit %s", status, exitCode)
+		status = toolCompletionStatus(status, params.Item["exitCode"])
+		u.reasoningActive = false
+		if status == "" {
+			return
 		}
+		u.screenAddToolActivityStatus(status, u.activeScreenTurnKey, u.activeScreenTurnID)
 		if u.screenMode {
-			u.screenAdd(screenStatus, status)
 			return
 		}
 		u.clearPrompt()
 		fmt.Fprintf(u.out, "%s  %s%s\n", statusColor(status), sanitizeText(status), reset)
 	case "fileChange":
+		u.reasoningActive = false
 		status, _ := params.Item["status"].(string)
+		u.screenAddToolActivityStatus(status, u.activeScreenTurnKey, u.activeScreenTurnID)
 		if u.screenMode {
-			u.screenAdd(screenStatus, status)
 			return
 		}
 		u.clearPrompt()
 		fmt.Fprintf(u.out, "%s  %s%s\n", statusColor(status), sanitizeText(status), reset)
+	case "reasoning":
+		u.reasoningActive = false
 	}
 }
 
@@ -1070,14 +1245,18 @@ func (u *ui) finishTurn(status string) {
 	u.assistant = false
 	u.tool = false
 	u.toolOutput = false
+	u.reasoningActive = false
+	u.reasoningShown = false
+	u.reasoningFrame = 0
 	u.busy = false
 	u.turnID = ""
 	if status == "" {
 		status = "completed"
 	}
+	u.screenAdd(screenInfo, u.recapText(status))
+	u.screenAdd(screenStatus, "turn "+status)
+	u.endScreenTurn()
 	if u.screenMode {
-		u.screenAdd(screenInfo, u.recapText(status))
-		u.screenAdd(screenStatus, "turn "+status)
 		u.startNextPrompt()
 		return
 	}
@@ -1178,6 +1357,7 @@ func (u *ui) handleServerRequest(request serverRequest) {
 			u.printStatus("user input request had no questions", yellow)
 			return
 		}
+		u.toolGroupBoundary++
 		u.clearPrompt()
 		u.input = nil
 		u.cursor = 0
@@ -1188,6 +1368,7 @@ func (u *ui) handleServerRequest(request serverRequest) {
 			questions: params.Questions,
 			answers:   make(map[string]userInputAnswer, len(params.Questions)),
 		}
+		u.resetInputQuestion()
 		u.printStatus(fmt.Sprintf("input requested · %d question%s", len(params.Questions), pluralSuffix(len(params.Questions))), cyan)
 		u.renderPrompt()
 	default:
@@ -1221,6 +1402,7 @@ func (u *ui) rejectServerRequest(request serverRequest, message string) {
 }
 
 func (u *ui) showApproval(request serverRequest, action, cwd, reason string, available []string) {
+	u.toolGroupBoundary++
 	u.clearPrompt()
 	u.dashboard = false
 	u.dashboardError = ""
@@ -1285,6 +1467,25 @@ func (u *ui) handleInputRequestKey(key keyEvent) error {
 	case keyEnter:
 		return u.submitInputAnswer()
 	case keyRune:
+		if u.inputQuestionHasOptions() && !u.inputOptionIsOther() {
+			if key.rune >= '1' && key.rune <= '9' {
+				u.setInputOption(int(key.rune - '1'))
+				u.renderPrompt()
+				return nil
+			}
+			if u.currentInputQuestion().IsOther && (key.rune == 'o' || key.rune == 'O') {
+				u.setInputOption(len(u.currentInputQuestion().Options))
+				u.renderPrompt()
+				return nil
+			}
+			if u.currentInputQuestion().IsOther {
+				u.setInputOption(len(u.currentInputQuestion().Options))
+				u.insertRune(key.rune)
+				u.renderPrompt()
+				return nil
+			}
+			return nil
+		}
 		u.insertRune(key.rune)
 		u.renderPrompt()
 	case keyBackspace:
@@ -1310,11 +1511,24 @@ func (u *ui) handleInputRequestKey(key keyEvent) error {
 		u.cursor = lineEnd(u.input, u.cursor)
 		u.renderPrompt()
 	case keyUp:
+		if u.moveInputOption(-1) {
+			u.renderPrompt()
+			return nil
+		}
 		u.moveVertical(-1)
 		u.renderPrompt()
 	case keyDown:
+		if u.moveInputOption(1) {
+			u.renderPrompt()
+			return nil
+		}
 		u.moveVertical(1)
 		u.renderPrompt()
+	case keyAltEnter, keyShiftEnter:
+		if !u.inputQuestionHasOptions() || u.inputOptionIsOther() {
+			u.insertRune('\n')
+			u.renderPrompt()
+		}
 	case keyMouseClick:
 		width, height := terminalSize()
 		if u.placeCursorFromMouse(key.mouseX, key.mouseY, width, height) {
@@ -1330,10 +1544,9 @@ func (u *ui) submitInputAnswer() error {
 		return nil
 	}
 	question := request.questions[request.index]
-	request.answers[question.ID] = userInputAnswer{Answers: []string{string(u.input)}}
+	request.answers[question.ID] = userInputAnswer{Answers: []string{u.inputAnswer()}}
 	request.index++
-	u.input = nil
-	u.cursor = 0
+	u.resetInputQuestion()
 	if request.index < len(request.questions) {
 		u.printStatus(fmt.Sprintf("input %d/%d", request.index+1, len(request.questions)), cyan)
 		u.renderPrompt()
@@ -1392,18 +1605,20 @@ func (u *ui) recapText(status string) string {
 		}
 		lines = append(lines, fmt.Sprintf("  %d %s", u.recap.fileChanges, changeLabel))
 	}
-	for index, command := range u.recap.commands {
-		if index == 3 {
-			lines = append(lines, fmt.Sprintf("  +%d more command%s", len(u.recap.commands)-index, pluralSuffix(len(u.recap.commands)-index)))
-			break
+	if u.showToolOutput {
+		for index, command := range u.recap.commands {
+			if index == 3 {
+				lines = append(lines, fmt.Sprintf("  +%d more command%s", len(u.recap.commands)-index, pluralSuffix(len(u.recap.commands)-index)))
+				break
+			}
+			lines = append(lines, "  $ "+truncateDisplay(sanitizeText(command), 100))
 		}
-		lines = append(lines, "  $ "+truncateDisplay(sanitizeText(command), 100))
 	}
 	if u.recap.outputs > 0 {
 		if u.showToolOutput {
 			lines = append(lines, fmt.Sprintf("  %d tool output%s visible", u.recap.outputs, pluralSuffix(u.recap.outputs)))
-		} else {
-			lines = append(lines, "  tool output collapsed · Ctrl+O to expand")
+		} else if !u.screenMode {
+			lines = append(lines, fmt.Sprintf("  %d tool output%s hidden", u.recap.outputs, pluralSuffix(u.recap.outputs)))
 		}
 	}
 	return strings.Join(lines, "\n")
@@ -1465,7 +1680,7 @@ func (u *ui) renderBusy() {
 	}
 	u.clearPrompt()
 	if u.busy {
-		fmt.Fprintf(u.out, "%s  … working · Ctrl-C to interrupt%s\n", muted, reset)
+		fmt.Fprintf(u.out, "%s  … working · Ctrl-C interrupt · twice quit%s\n", muted, reset)
 	}
 }
 
@@ -1480,19 +1695,46 @@ func (u *ui) renderPrompt() {
 	if u.inputRequest == nil && u.busy {
 		return
 	}
-	value := strings.ReplaceAll(u.inputValueWithCursor(), "\n", "\n  ")
 	if u.inputRequest != nil {
-		question := u.currentInputQuestion()
-		label := "?"
-		if question.Header != "" {
-			label += " " + question.Header
+		details := u.inputQuestionDetails()
+		promptLines := 0
+		for index, detail := range details {
+			promptLines += strings.Count(detail, "\n") + 1
+			if index == 0 {
+				fmt.Fprintf(u.out, "%s%s%s", cyan, detail, reset)
+			} else {
+				fmt.Fprintf(u.out, "\n%s  %s%s", cyan, strings.ReplaceAll(detail, "\n", "\n  "), reset)
+			}
 		}
-		fmt.Fprintf(u.out, "%s%s%s\n%s› %s%s", cyan, label, reset, cyan, value, reset)
-		u.promptLines = strings.Count(value, "\n") + 2
+		u.promptLines = promptLines
 		return
 	}
+	value := strings.ReplaceAll(u.inputValueWithCursor(), "\n", "\n  ")
 	fmt.Fprintf(u.out, "%s› %s%s", cyan, value, reset)
 	u.promptLines = strings.Count(value, "\n") + 1
+	if popupLines := u.inlineCommandPopupLines(); popupLines > 0 {
+		items := u.commandPopupItems()
+		selected := u.commandPopupIndex
+		if selected < 0 {
+			selected = 0
+		}
+		if selected >= len(items) {
+			selected = len(items) - 1
+		}
+		fmt.Fprintf(u.out, "\n%s⌘ Codex commands%s", cyan, reset)
+		for index, command := range items {
+			if index == 6 {
+				break
+			}
+			marker := "  "
+			if index == selected {
+				marker = "› "
+			}
+			fmt.Fprintf(u.out, "\n%s%s/%-18s  %s%s", muted, marker, command.name, command.description, reset)
+		}
+		fmt.Fprintf(u.out, "\n%s↑↓ choose · Tab complete · Enter run · Esc close%s", cyan, reset)
+		u.promptLines += popupLines
+	}
 }
 
 func (u *ui) currentInputQuestion() userInputQuestion {
@@ -1500,6 +1742,132 @@ func (u *ui) currentInputQuestion() userInputQuestion {
 		return userInputQuestion{}
 	}
 	return u.inputRequest.questions[u.inputRequest.index]
+}
+
+func (u *ui) inputQuestionHasOptions() bool {
+	question := u.currentInputQuestion()
+	return len(question.Options) > 0 || question.IsOther
+}
+
+func (u *ui) inputOptionCount() int {
+	question := u.currentInputQuestion()
+	count := len(question.Options)
+	if question.IsOther {
+		count++
+	}
+	return count
+}
+
+func (u *ui) inputOptionIndex() int {
+	count := u.inputOptionCount()
+	if count == 0 || u.inputRequest == nil {
+		return -1
+	}
+	if u.inputRequest.optionIndex < 0 || u.inputRequest.optionIndex >= count {
+		return 0
+	}
+	return u.inputRequest.optionIndex
+}
+
+func (u *ui) inputOptionIsOther() bool {
+	question := u.currentInputQuestion()
+	return question.IsOther && u.inputOptionIndex() == len(question.Options)
+}
+
+func (u *ui) setInputOption(index int) bool {
+	if u.inputRequest == nil || !u.inputQuestionHasOptions() {
+		return false
+	}
+	if index < 0 || index >= u.inputOptionCount() {
+		return false
+	}
+	if u.inputOptionIsOther() {
+		u.inputRequest.otherInput = append([]rune(nil), u.input...)
+	}
+	u.inputRequest.optionIndex = index
+	if u.inputOptionIsOther() {
+		u.input = append([]rune(nil), u.inputRequest.otherInput...)
+		u.cursor = len(u.input)
+	} else {
+		u.input = nil
+		u.cursor = 0
+	}
+	return true
+}
+
+func (u *ui) moveInputOption(direction int) bool {
+	if !u.inputQuestionHasOptions() {
+		return false
+	}
+	index := u.inputOptionIndex() + direction
+	if index < 0 {
+		index = 0
+	}
+	if index >= u.inputOptionCount() {
+		index = u.inputOptionCount() - 1
+	}
+	return u.setInputOption(index)
+}
+
+func (u *ui) resetInputQuestion() {
+	u.input = nil
+	u.cursor = 0
+	if u.inputRequest == nil {
+		return
+	}
+	u.inputRequest.optionIndex = 0
+	u.inputRequest.otherInput = nil
+}
+
+func (u *ui) inputAnswer() string {
+	if u.inputQuestionHasOptions() && !u.inputOptionIsOther() {
+		index := u.inputOptionIndex()
+		question := u.currentInputQuestion()
+		if index >= 0 && index < len(question.Options) {
+			return question.Options[index].Label
+		}
+	}
+	return string(u.input)
+}
+
+func (u *ui) inputQuestionDetails() []string {
+	question := u.currentInputQuestion()
+	details := []string{
+		fmt.Sprintf("? question %d/%d", u.inputRequest.index+1, len(u.inputRequest.questions)),
+		question.Question,
+	}
+	if question.Header != "" {
+		details[0] += " · " + question.Header
+	}
+	if !u.inputQuestionHasOptions() {
+		details = append(details, "answer: "+u.inputValueWithCursor())
+		return details
+	}
+	selected := u.inputOptionIndex()
+	for index, option := range question.Options {
+		marker := "  "
+		if index == selected {
+			marker = "› "
+		}
+		label := fmt.Sprintf("%s%d) %s", marker, index+1, option.Label)
+		if option.Description != "" {
+			label += " — " + option.Description
+		}
+		details = append(details, label)
+	}
+	if question.IsOther {
+		marker := "  "
+		if u.inputOptionIsOther() {
+			marker = "› "
+		}
+		details = append(details, marker+"o) Other")
+	}
+	if u.inputOptionIsOther() {
+		details = append(details, "other: "+u.inputValueWithCursor())
+	} else {
+		details = append(details, "↑↓ select · 1–9 choose · o Other · Enter submit")
+	}
+	return details
 }
 
 func (u *ui) inputValueWithCursor() string {
@@ -1514,6 +1882,9 @@ func (u *ui) inputValueWithCursor() string {
 	}
 	if u.cursor > len(value) {
 		u.cursor = len(value)
+	}
+	if u.screenMode {
+		return string(value)
 	}
 	value = append(value, 0)
 	copy(value[u.cursor+1:], value[u.cursor:])
@@ -1537,21 +1908,20 @@ func (u *ui) clearPrompt() {
 }
 
 func (u *ui) printStatus(message, color string) {
+	kind := screenStatus
+	if color == yellow {
+		kind = screenWarning
+	}
+	if color == red {
+		kind = screenError
+	}
 	if u.screenMode {
-		kind := screenStatus
-		if color == yellow {
-			kind = screenWarning
-		}
-		if color == red {
-			kind = screenError
-		}
-		if color == green {
-			kind = screenStatus
-		}
+		u.showWelcome = false
 		u.screenAdd(kind, message)
 		u.lastOutput = time.Now()
 		return
 	}
+	u.screenAdd(kind, message)
 	u.clearPrompt()
 	fmt.Fprintf(u.out, "%s  %s%s\n", color, sanitizeText(message), reset)
 	u.lastOutput = time.Now()
@@ -1559,11 +1929,15 @@ func (u *ui) printStatus(message, color string) {
 
 func (u *ui) printError(err error) {
 	if u.screenMode {
+		u.showWelcome = false
 		u.screenAdd(screenError, err.Error())
 		u.lastOutput = time.Now()
 		return
 	}
-	u.printStatus(err.Error(), red)
+	u.screenAdd(screenError, err.Error())
+	u.clearPrompt()
+	fmt.Fprintf(u.out, "%s  %s%s\n", red, sanitizeText(err.Error()), reset)
+	u.lastOutput = time.Now()
 }
 
 func sanitizeText(value string) string {

@@ -37,7 +37,7 @@ cleanup() {
 trap cleanup EXIT
 
 mkdir -p "$bin_dir"
-(cd "$source_dir" && go test ./... && go build -trimpath -ldflags='-s -w' -o "$tmp_target" .)
+(cd "$source_dir" && go test ./... && go build -trimpath -ldflags='-s -w' -o "$tmp_target" ./cmd/lumen)
 chmod 755 "$tmp_target"
 mv -f "$tmp_target" "$target"
 trap - EXIT

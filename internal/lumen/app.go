@@ -1,4 +1,4 @@
-package main
+package lumen
 
 import (
 	"encoding/json"
@@ -18,7 +18,7 @@ import (
 
 const (
 	appName    = "lumen"
-	appVersion = "0.1.0"
+	appVersion = "0.3.0"
 )
 
 type options struct {
@@ -38,47 +38,50 @@ type runtimeOverrides struct {
 	sandbox         string
 }
 
-func main() {
-	opts, err := parseOptions(os.Args[1:])
+func Run(args []string) int {
+	if nativeArgs, ok := nativeCodexInvocation(args); ok {
+		return runNativeCodex(nativeArgs)
+	}
+	opts, err := parseOptions(args)
 	if errors.Is(err, flag.ErrHelp) {
-		return
+		return 0
 	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%s: %v\n", appName, err)
-		os.Exit(2)
+		return 2
 	}
 	if opts.version {
 		fmt.Println(appName, appVersion)
-		return
+		return 0
 	}
 
 	if opts.prompt == "" && !term.IsTerminal(int(os.Stdin.Fd())) {
 		fmt.Fprintln(os.Stderr, "lumen: interactive terminal required")
-		os.Exit(2)
+		return 2
 	}
 
 	client, err := startAppServer()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%s: %v\n", appName, err)
-		os.Exit(1)
+		return 1
 	}
 	defer client.Close()
 
 	cwd, err := os.Getwd()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%s: get cwd: %v\n", appName, err)
-		os.Exit(1)
+		return 1
 	}
 
 	if err := client.Initialize(); err != nil {
 		fmt.Fprintf(os.Stderr, "%s: initialize app-server: %v\n", appName, err)
-		os.Exit(1)
+		return 1
 	}
 
 	thread, err := openThread(client, cwd, opts)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%s: open thread: %v\n", appName, err)
-		os.Exit(1)
+		return 1
 	}
 
 	threadCWD := thread.CWD
@@ -88,8 +91,9 @@ func main() {
 	ui := newUI(client, thread, threadCWD, opts.fullscreen, opts.runtime)
 	if err := ui.run(opts.prompt); err != nil {
 		fmt.Fprintf(os.Stderr, "%s: %v\n", appName, err)
-		os.Exit(1)
+		return 1
 	}
+	return 0
 }
 
 func parseOptions(args []string) (options, error) {
@@ -101,9 +105,12 @@ func parseOptions(args []string) (options, error) {
 
 Usage:
   lumen [OPTIONS] [PROMPT]
+  lumen <CODEX-SUBCOMMAND> [ARGS]
+  lumen codex <CODEX-ARGS>
 
-The official codex CLI remains available as the fallback. This frontend talks
-to the local codex app-server and does not replace Codex configuration.
+Native Codex subcommands are passed to the installed codex binary with their
+original stdio and exit code. Interactive prompts use the local codex
+app-server and do not replace Codex configuration.
 
 Options:
 `)
@@ -198,32 +205,22 @@ func openThread(client *appServer, cwd string, opts options) (threadSummary, err
 		return client.ResumeThread(opts.resume, opts.runtime)
 	}
 	if opts.continue_ {
-		var result struct {
-			Data []threadSummary `json:"data"`
-		}
-		if err := client.Call("thread/list", map[string]any{
-			"cwd":      cwd,
-			"limit":    1,
-			"archived": false,
-		}, &result); err != nil {
+		threads, err := client.ListThreads(cwd, 1)
+		if err != nil {
 			return threadSummary{}, err
 		}
-		if len(result.Data) == 0 {
+		if len(threads) == 0 {
 			return client.StartThread(cwd, opts.runtime)
 		}
-		return client.ResumeThread(result.Data[0].ID, opts.runtime)
+		return client.ResumeThread(threads[0].ID, opts.runtime)
 	}
 	return client.StartThread(cwd, opts.runtime)
 }
 
 func startAppServer() (*appServer, error) {
-	bin := os.Getenv("LUMEN_CODEX_BIN")
-	if bin == "" {
-		var err error
-		bin, err = exec.LookPath("codex")
-		if err != nil {
-			return nil, fmt.Errorf("codex executable not found: %w", err)
-		}
+	bin, err := codexBinary()
+	if err != nil {
+		return nil, err
 	}
 	cmd := exec.Command(bin, appServerArgs()...)
 	cmd.Stderr = os.Stderr
@@ -291,6 +288,7 @@ type appServer struct {
 	errors        chan error
 	closed        chan struct{}
 	closeOnce     sync.Once
+	failure       error
 }
 
 func newAppServer(stdin io.WriteCloser, stdout io.ReadCloser, cmd *exec.Cmd) *appServer {
@@ -300,8 +298,8 @@ func newAppServer(stdin io.WriteCloser, stdout io.ReadCloser, cmd *exec.Cmd) *ap
 		cmd:           cmd,
 		nextID:        1,
 		pending:       make(map[string]pendingCall),
-		notifications: make(chan rpcMessage, 64),
-		requests:      make(chan serverRequest, 16),
+		notifications: make(chan rpcMessage, 256),
+		requests:      make(chan serverRequest, 64),
 		errors:        make(chan error, 1),
 		closed:        make(chan struct{}),
 	}
@@ -313,9 +311,10 @@ func (c *appServer) readLoop() {
 		var message rpcMessage
 		if err := decoder.Decode(&message); err != nil {
 			if !errors.Is(err, io.EOF) {
-				c.errors <- fmt.Errorf("read app-server: %w", err)
+				c.closeWithError(fmt.Errorf("read app-server: %w", err))
+			} else {
+				c.closeWithError(nil)
 			}
-			c.closeOnce.Do(func() { close(c.closed) })
 			return
 		}
 
@@ -333,11 +332,40 @@ func (c *appServer) readLoop() {
 			continue
 		}
 		if len(message.ID) > 0 && message.Method != "" {
-			c.requests <- serverRequest{message.ID, message.Method, message.Params}
+			select {
+			case c.requests <- serverRequest{message.ID, message.Method, message.Params}:
+			case <-c.closed:
+				return
+			}
 			continue
 		}
-		c.notifications <- message
+		select {
+		case c.notifications <- message:
+		case <-c.closed:
+			return
+		}
 	}
+}
+
+func (c *appServer) closeWithError(err error) {
+	if err != nil {
+		c.mu.Lock()
+		if c.failure == nil {
+			c.failure = err
+		}
+		c.mu.Unlock()
+		select {
+		case c.errors <- err:
+		default:
+		}
+	}
+	c.closeOnce.Do(func() { close(c.closed) })
+}
+
+func (c *appServer) failureError() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.failure
 }
 
 func (c *appServer) Initialize() error {
@@ -409,14 +437,242 @@ func (c *appServer) ListThreads(cwd string, limit int) ([]threadSummary, error) 
 	var result struct {
 		Data []threadSummary `json:"data"`
 	}
-	if err := c.Call("thread/list", map[string]any{
-		"cwd":      cwd,
+	params := map[string]any{
 		"limit":    limit,
+		"sortKey":  "updated_at",
 		"archived": false,
+	}
+	if strings.TrimSpace(cwd) != "" {
+		params["cwd"] = cwd
+	}
+	if err := c.Call("thread/list", params, &result); err != nil {
+		return nil, err
+	}
+	return result.Data, nil
+}
+
+type codexModel struct {
+	ID          string `json:"id"`
+	Model       string `json:"model"`
+	DisplayName string `json:"displayName"`
+	Hidden      bool   `json:"hidden"`
+}
+
+func (c *appServer) ListModels() ([]codexModel, error) {
+	var result struct {
+		Data []codexModel `json:"data"`
+	}
+	if err := c.Call("model/list", map[string]any{
+		"includeHidden": false,
+		"limit":         50,
 	}, &result); err != nil {
 		return nil, err
 	}
 	return result.Data, nil
+}
+
+type codexSkill struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Enabled     bool   `json:"enabled"`
+}
+
+type codexSkillEntry struct {
+	CWD    string       `json:"cwd"`
+	Skills []codexSkill `json:"skills"`
+	Errors []struct {
+		Message string `json:"message"`
+	} `json:"errors"`
+}
+
+type codexHookEntry struct {
+	CWD   string `json:"cwd"`
+	Hooks []struct {
+		Key        string `json:"key"`
+		EventName  string `json:"eventName"`
+		Enabled    bool   `json:"enabled"`
+		StatusText string `json:"statusMessage"`
+	} `json:"hooks"`
+	Errors []struct {
+		Message string `json:"message"`
+	} `json:"errors"`
+}
+
+func (c *appServer) ListSkills(cwd string) ([]codexSkillEntry, error) {
+	var result struct {
+		Data []codexSkillEntry `json:"data"`
+	}
+	if err := c.Call("skills/list", map[string]any{
+		"cwds":        []string{cwd},
+		"forceReload": false,
+	}, &result); err != nil {
+		return nil, err
+	}
+	return result.Data, nil
+}
+
+func (c *appServer) ListHooks(cwd string) ([]codexHookEntry, error) {
+	var result struct {
+		Data []codexHookEntry `json:"data"`
+	}
+	if err := c.Call("hooks/list", map[string]any{
+		"cwds": []string{cwd},
+	}, &result); err != nil {
+		return nil, err
+	}
+	return result.Data, nil
+}
+
+type codexMCPServer struct {
+	Name          string         `json:"name"`
+	Tools         map[string]any `json:"tools"`
+	ToolsError    *string        `json:"toolsError"`
+	RuntimeStatus any            `json:"runtimeStatus"`
+}
+
+func (c *appServer) ListMCPServers(threadID string) ([]codexMCPServer, error) {
+	var result struct {
+		Data []codexMCPServer `json:"data"`
+	}
+	if err := c.Call("mcpServerStatus/list", map[string]any{
+		"threadId": threadID,
+		"limit":    50,
+	}, &result); err != nil {
+		return nil, err
+	}
+	return result.Data, nil
+}
+
+type codexApp struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Enabled     bool   `json:"isEnabled"`
+}
+
+type codexPluginMarketplace struct {
+	Name    string `json:"name"`
+	Plugins []struct {
+		Name      string `json:"name"`
+		Installed bool   `json:"installed"`
+		Enabled   bool   `json:"enabled"`
+	} `json:"plugins"`
+}
+
+func (c *appServer) ListApps() ([]codexApp, error) {
+	var result struct {
+		Data []codexApp `json:"data"`
+	}
+	if err := c.Call("app/list", map[string]any{
+		"limit": 50,
+	}, &result); err != nil {
+		return nil, err
+	}
+	return result.Data, nil
+}
+
+func (c *appServer) ListPlugins(cwd string) ([]codexPluginMarketplace, error) {
+	var result struct {
+		Marketplaces []codexPluginMarketplace `json:"marketplaces"`
+	}
+	if err := c.Call("plugin/list", map[string]any{
+		"cwds":         []string{cwd},
+		"forceRefetch": false,
+	}, &result); err != nil {
+		return nil, err
+	}
+	return result.Marketplaces, nil
+}
+
+func (c *appServer) ForkThread(id string, overrides runtimeOverrides) (threadSummary, error) {
+	return c.forkThread(id, "", overrides)
+}
+
+func (c *appServer) ForkThreadAt(id, lastTurnID string, overrides runtimeOverrides) (threadSummary, error) {
+	return c.forkThread(id, lastTurnID, overrides)
+}
+
+func (c *appServer) forkThread(id, lastTurnID string, overrides runtimeOverrides) (threadSummary, error) {
+	var result struct {
+		Thread          threadSummary   `json:"thread"`
+		Model           string          `json:"model"`
+		CWD             string          `json:"cwd"`
+		Instructions    []string        `json:"instructionSources"`
+		ApprovalPolicy  json.RawMessage `json:"approvalPolicy"`
+		Sandbox         json.RawMessage `json:"sandbox"`
+		ReasoningEffort string          `json:"reasoningEffort"`
+	}
+	params := map[string]any{"threadId": id}
+	if lastTurnID != "" {
+		params["lastTurnId"] = lastTurnID
+	}
+	applyThreadOverrides(params, overrides)
+	if err := c.Call("thread/fork", params, &result); err != nil {
+		return threadSummary{}, err
+	}
+	applyThreadMetadata(&result.Thread, result.Model, result.CWD, result.Instructions, result.ApprovalPolicy)
+	result.Thread.Sandbox = result.Sandbox
+	result.Thread.ReasoningEffort = result.ReasoningEffort
+	return result.Thread, nil
+}
+
+func (c *appServer) ArchiveThread(id string) error {
+	return c.Call("thread/archive", map[string]string{"threadId": id}, nil)
+}
+
+func (c *appServer) DeleteThread(id string) error {
+	return c.Call("thread/delete", map[string]string{"threadId": id}, nil)
+}
+
+func (c *appServer) SetThreadName(id, name string) error {
+	return c.Call("thread/name/set", map[string]string{"threadId": id, "name": name}, nil)
+}
+
+func (c *appServer) CompactThread(id string) error {
+	return c.Call("thread/compact/start", map[string]string{"threadId": id}, nil)
+}
+
+func (c *appServer) StartReview(threadID string, target map[string]any) (string, error) {
+	var result struct {
+		Turn struct {
+			ID string `json:"id"`
+		} `json:"turn"`
+	}
+	if err := c.Call("review/start", map[string]any{
+		"threadId": threadID,
+		"target":   target,
+		"delivery": "inline",
+	}, &result); err != nil {
+		return "", err
+	}
+	return result.Turn.ID, nil
+}
+
+func (c *appServer) GetThreadGoal(id string) (map[string]any, error) {
+	var result struct {
+		Goal map[string]any `json:"goal"`
+	}
+	if err := c.Call("thread/goal/get", map[string]string{"threadId": id}, &result); err != nil {
+		return nil, err
+	}
+	return result.Goal, nil
+}
+
+func (c *appServer) SetThreadGoal(id, objective string) (map[string]any, error) {
+	var result struct {
+		Goal map[string]any `json:"goal"`
+	}
+	if err := c.Call("thread/goal/set", map[string]any{
+		"threadId":  id,
+		"objective": objective,
+	}, &result); err != nil {
+		return nil, err
+	}
+	return result.Goal, nil
+}
+
+func (c *appServer) ClearThreadGoal(id string) error {
+	return c.Call("thread/goal/clear", map[string]string{"threadId": id}, nil)
 }
 
 func applyThreadMetadata(thread *threadSummary, model, cwd string, instructions []string, approvalPolicy json.RawMessage) {
@@ -522,6 +778,9 @@ func (c *appServer) Call(method string, params any, target any) error {
 	case err := <-c.errors:
 		return err
 	case <-c.closed:
+		if err := c.failureError(); err != nil {
+			return err
+		}
 		return fmt.Errorf("app-server closed before %s completed", method)
 	case <-time.After(30 * time.Second):
 		return fmt.Errorf("timeout waiting for %s", method)
@@ -564,8 +823,16 @@ func (c *appServer) writeMessage(message any) error {
 	if err != nil {
 		return err
 	}
+	if c.stdin == nil {
+		return errors.New("app-server stdin unavailable")
+	}
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
+	select {
+	case <-c.closed:
+		return errors.New("app-server closed")
+	default:
+	}
 	if _, err := c.stdin.Write(append(encoded, '\n')); err != nil {
 		return fmt.Errorf("write app-server: %w", err)
 	}
@@ -573,9 +840,13 @@ func (c *appServer) writeMessage(message any) error {
 }
 
 func (c *appServer) Close() {
-	c.closeOnce.Do(func() { close(c.closed) })
-	_ = c.stdin.Close()
-	_ = c.stdout.Close()
+	c.closeWithError(nil)
+	if c.stdin != nil {
+		_ = c.stdin.Close()
+	}
+	if c.stdout != nil {
+		_ = c.stdout.Close()
+	}
 	if c.cmd != nil && c.cmd.Process != nil {
 		_ = c.cmd.Process.Kill()
 	}
