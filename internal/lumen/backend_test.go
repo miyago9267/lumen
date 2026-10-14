@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os/exec"
@@ -387,5 +388,28 @@ func TestCodexBackendPromptSetsTurnForRequestValidation(t *testing.T) {
 	rejected, ok := nextEvent(t, events).(EvRequestRejected)
 	if !ok || !strings.Contains(rejected.Message, "turn mismatch") {
 		t.Fatalf("stale turn request before turn/started = %#v", rejected)
+	}
+}
+
+// turn 失敗時要顯示原因（codex turn.error / ACP Err）；同一則錯誤已由 error notice 顯示過就不重複。
+func TestFailedTurnShowsReason(t *testing.T) {
+	reason := errors.New("model not supported with ChatGPT account")
+	frontend := &ui{screenMode: true}
+	frontend.handleEvent(EvTurnCompleted{Status: TurnFailed, Label: "failed", Err: reason})
+	plain := stripANSI(frontend.screenFrame(120, 20))
+	if !strings.Contains(plain, "model not supported with ChatGPT account") || !strings.Contains(plain, "turn failed") {
+		t.Fatalf("failure reason missing: %q", plain)
+	}
+
+	dup := &ui{screenMode: true}
+	dup.handleEvent(EvNotice{Level: NoticeError, Text: reason.Error()})
+	dup.handleEvent(EvTurnCompleted{Status: TurnFailed, Label: "failed", Err: reason})
+	if got := strings.Count(stripANSI(dup.screenFrame(120, 20)), "model not supported"); got != 1 {
+		t.Fatalf("reason shown %d times, want 1", got)
+	}
+	// 下一個 turn 的同樣錯誤仍要顯示。
+	dup.handleEvent(EvTurnCompleted{Status: TurnFailed, Label: "failed", Err: reason})
+	if got := strings.Count(stripANSI(dup.screenFrame(120, 30)), "model not supported"); got != 2 {
+		t.Fatalf("second turn reason shown %d times in total, want 2", got)
 	}
 }

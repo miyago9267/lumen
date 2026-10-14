@@ -352,15 +352,17 @@ type screenSelection struct {
 }
 
 type ui struct {
-	backend    Backend
-	lastCaps   Capabilities // 連線中斷前最後已知的 backend capability
-	thread     threadSummary
-	cwd        string
-	fullscreen bool
-	screenMode bool
-	out        io.Writer
-	in         io.Reader
-	overrides  runtimeOverrides
+	backend  Backend
+	lastCaps Capabilities // 連線中斷前最後已知的 backend capability
+	// lastErrorNotice 是本 turn 最近一則 error notice，用來避免 turn 失敗原因重複顯示。
+	lastErrorNotice string
+	thread          threadSummary
+	cwd             string
+	fullscreen      bool
+	screenMode      bool
+	out             io.Writer
+	in              io.Reader
+	overrides       runtimeOverrides
 
 	input                 []rune
 	cursor                int
@@ -1167,10 +1169,16 @@ func (u *ui) handleEvent(event Event) {
 	case EvCommandsUpdated:
 		u.agentCommands = event.Commands
 	case EvTurnCompleted:
+		// 失敗原因若已由 error notice 顯示過就不重複。
+		if event.Err != nil && event.Err.Error() != u.lastErrorNotice {
+			u.printError(event.Err)
+		}
+		u.lastErrorNotice = ""
 		u.finishTurn(event.Label)
 	case EvNotice:
 		switch event.Level {
 		case NoticeError:
+			u.lastErrorNotice = event.Text
 			u.printError(errors.New(event.Text))
 		case NoticeWarn:
 			u.printStatus(event.Text, yellow)

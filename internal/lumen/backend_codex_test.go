@@ -2,6 +2,7 @@ package lumen
 
 import (
 	"encoding/json"
+	"errors"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -189,6 +190,25 @@ var codexGoldenCases = []struct {
 		name:    "error",
 		message: notificationOf("error", `{"message":"boom"}`),
 		want:    []Event{EvNotice{Level: NoticeError, Text: "boom"}},
+	},
+	{
+		name:    "error nested in TurnError",
+		message: notificationOf("error", `{"error":{"message":"model not supported with ChatGPT account"},"threadId":"thread-1","turnId":"turn-1","willRetry":false}`),
+		want:    []Event{EvNotice{Level: NoticeError, Text: "model not supported with ChatGPT account"}},
+	},
+	{
+		name:    "error nested will retry",
+		message: notificationOf("error", `{"error":{"message":"stream dropped"},"threadId":"thread-1","turnId":"turn-1","willRetry":true}`),
+		want:    []Event{EvNotice{Level: NoticeWarn, Text: "stream dropped · retrying"}},
+	},
+	{
+		name:    "error without message",
+		message: notificationOf("error", `{"threadId":"thread-1"}`),
+	},
+	{
+		name:    "turn/completed failed with error",
+		message: notificationOf("turn/completed", `{"threadId":"thread-1","turn":{"id":"turn-1","status":"failed","error":{"message":"model not supported with ChatGPT account"}}}`),
+		want:    []Event{EvTurnCompleted{TurnID: "turn-1", Status: TurnFailed, Label: "failed", Err: errors.New("model not supported with ChatGPT account")}},
 	},
 	{
 		name:    "warning",

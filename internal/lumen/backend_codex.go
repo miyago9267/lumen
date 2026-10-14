@@ -118,17 +118,36 @@ func (t codexTranslator) notification(message rpcMessage) []Event {
 			Turn     struct {
 				ID     string `json:"id"`
 				Status string `json:"status"`
+				Error  *struct {
+					Message string `json:"message"`
+				} `json:"error"`
 			} `json:"turn"`
 		}
 		if json.Unmarshal(message.Params, &params) == nil && params.ThreadID == t.threadID {
-			return []Event{EvTurnCompleted{TurnID: params.Turn.ID, Status: codexTurnStatus(params.Turn.Status), Label: params.Turn.Status}}
+			event := EvTurnCompleted{TurnID: params.Turn.ID, Status: codexTurnStatus(params.Turn.Status), Label: params.Turn.Status}
+			if params.Turn.Error != nil && params.Turn.Error.Message != "" {
+				event.Err = errors.New(params.Turn.Error.Message)
+			}
+			return []Event{event}
 		}
 	case "error":
+		// app-server 的 ErrorNotification 是 {error: {message}, willRetry}；舊形狀 {message} 仍接受。
 		var params struct {
 			Message string `json:"message"`
+			Error   struct {
+				Message string `json:"message"`
+			} `json:"error"`
+			WillRetry bool `json:"willRetry"`
 		}
 		if json.Unmarshal(message.Params, &params) == nil {
-			return []Event{EvNotice{Level: NoticeError, Text: params.Message}}
+			text := valueOr(params.Error.Message, params.Message)
+			switch {
+			case text == "":
+			case params.WillRetry:
+				return []Event{EvNotice{Level: NoticeWarn, Text: text + " · retrying"}}
+			default:
+				return []Event{EvNotice{Level: NoticeError, Text: text}}
+			}
 		}
 	case "warning", "configWarning", "guardianWarning":
 		var params struct {
