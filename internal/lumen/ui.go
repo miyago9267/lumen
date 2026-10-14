@@ -1153,6 +1153,15 @@ func (u *ui) handleEvent(event Event) {
 		}
 	case EvApprovalRequest:
 		u.presentApproval(event)
+	case EvApprovalExpired:
+		if u.approval == nil || u.approval.id != event.ReqID {
+			return
+		}
+		u.approval = nil
+		u.printStatus(event.Text, yellow)
+		if !u.screenMode {
+			u.renderBusy()
+		}
 	case EvInputRequest:
 		u.presentInputRequest(event)
 	case EvRequestRejected:

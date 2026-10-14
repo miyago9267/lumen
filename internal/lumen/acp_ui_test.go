@@ -85,3 +85,33 @@ func TestModeWarningStaysInStatusBarUntilCleared(t *testing.T) {
 		t.Fatalf("warning not cleared: %q", label)
 	}
 }
+
+// verifier follow-up：approval 逾時後 card 必須消失並顯示 timed-out 狀態，後續按鍵不得送出任何回覆。
+func TestApprovalExpiredClearsCard(t *testing.T) {
+	backend := &approvalRecorder{}
+	frontend := &ui{screenMode: true, backend: backend}
+	frontend.handleEvent(explicitApproval())
+	frontend.handleEvent(EvApprovalExpired{ReqID: "0", Text: "permission request timed out · cancelled"})
+	if frontend.approval != nil {
+		t.Fatal("approval card still pending after timeout")
+	}
+	if plain := stripANSI(frontend.screenFrame(100, 24)); !strings.Contains(plain, "timed out") {
+		t.Fatalf("no timed-out status row: %q", plain)
+	}
+	if err := frontend.handleKey(keyEvent{typ: keyRune, rune: '1'}); err != nil {
+		t.Fatalf("key after timeout error = %v", err)
+	}
+	if len(backend.resolved) != 0 {
+		t.Fatalf("key after timeout resolved an approval: %v", backend.resolved)
+	}
+}
+
+// 逾時的是別張 card 時不得清掉目前的 card。
+func TestApprovalExpiredIgnoresOtherRequest(t *testing.T) {
+	frontend := &ui{screenMode: true, backend: &approvalRecorder{}}
+	frontend.handleEvent(explicitApproval())
+	frontend.handleEvent(EvApprovalExpired{ReqID: "7", Text: "permission request timed out · cancelled"})
+	if frontend.approval == nil {
+		t.Fatal("unrelated expiry cleared the current approval")
+	}
+}

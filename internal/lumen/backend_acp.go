@@ -931,7 +931,7 @@ func (b *acpBackend) handlePermission(message rpcMessage) {
 		b.mu.Unlock()
 		if current == perm {
 			cancel()
-			b.send(EvNotice{Level: NoticeWarn, Text: "permission request timed out · cancelled"})
+			b.send(EvApprovalExpired{ReqID: reqID, Text: "permission request timed out · cancelled"})
 		}
 	})
 	b.perms[reqID] = perm

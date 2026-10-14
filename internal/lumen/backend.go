@@ -256,6 +256,13 @@ type EvApprovalRequest struct {
 	Explicit bool
 }
 
+// EvApprovalExpired 表示 backend 已自行結束某張 approval（例如 ACP permission 逾時而回 cancelled）；
+// UI 若仍顯示該 request 的 card 必須清掉，並顯示 Text。
+type EvApprovalExpired struct {
+	ReqID string
+	Text  string
+}
+
 type EvInputRequest struct {
 	ReqID     string
 	TurnID    string
@@ -284,6 +291,7 @@ func (EvUsage) isEvent()              {}
 func (EvTurnCompleted) isEvent()      {}
 func (EvNotice) isEvent()             {}
 func (EvApprovalRequest) isEvent()    {}
+func (EvApprovalExpired) isEvent()    {}
 func (EvInputRequest) isEvent()       {}
 func (EvRequestRejected) isEvent()    {}
 func (EvConnectionLost) isEvent()     {}

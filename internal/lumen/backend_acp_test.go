@@ -455,6 +455,16 @@ func TestACPPermissionFailsClosed(t *testing.T) {
 		if got := lastMessage(events); got != "outcome:cancelled:" {
 			t.Fatalf("agent saw %q", got)
 		}
+		// 逾時要讓 UI 能清掉 approval card。
+		expired := false
+		for _, event := range events {
+			if e, ok := event.(EvApprovalExpired); ok && e.ReqID == "0" {
+				expired = true
+			}
+		}
+		if !expired {
+			t.Fatalf("timeout did not emit EvApprovalExpired: %#v", events)
+		}
 	})
 	t.Run("session mismatch", func(t *testing.T) {
 		run := startFakeACP(t, nil, nil)
