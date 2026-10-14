@@ -20,23 +20,23 @@ spec: spec-lumen-backend-adapter
 
 ## P1：UI 改吃 normalized events（codexBackend，零行為變更）— 2.5–3.5 天
 
-- [ ] T1.1 定義 `backend.go`：`Event` 型別、`Capabilities`、`Backend`、`SessionInfo`、
+- [x] T1.1 定義 `backend.go`：`Event` 型別、`Capabilities`、`Backend`、`SessionInfo`、
   `CodexExtras`（0.5 天）— T-P1-01
-- [ ] T1.2 `backend_codex.go`：`codexBackend` 包 `appServer`；把 `handleNotification` /
+- [x] T1.2 `backend_codex.go`：`codexBackend` 包 `appServer`；把 `handleNotification` /
   `handleItemStarted` / `handleItemCompleted` / `handleServerRequest` 的 codex 解析搬成
   `codex method -> Event` 轉譯（含 `validateServerRequest` 下沉）（1 天）— T-P1-02, T-P1-03
-- [ ] T1.3 UI event loop（`ui.go:466-500`、`screen.go:172-210`）改 select 單一 `Events()`；
+- [x] T1.3 UI event loop（`ui.go:466-500`、`screen.go:172-210`）改 select 單一 `Events()`；
   新增 `handleEvent(Event)`；**保留 shim**：`handleNotification(msg) = handleEvent(codexToEvent(msg))`、
   `handleServerRequest` / `handleItemStarted` / `handleItemCompleted` 同樣保留為 codex->Event->`handleEvent`
   的薄包裝，使既有測試直接呼叫這些函式（`lumen_test.go` 約 705、1290、1297、1314-1317、1446、1516、1827、
   1859、1894、1947、1998、2076）不需修改（0.75 天）— T-P1-04
-- [ ] T1.4 approval / user-input 回應改走 `ResolveApproval` / `AnswerInput`
+- [x] T1.4 approval / user-input 回應改走 `ResolveApproval` / `AnswerInput`
   （`ui.go:1470`、`1594`、`1348`、`1377`）（0.25 天）— T-P1-05
-- [ ] T1.5 `native_command_handlers.go`、`dashboard.go`：通用操作走 `Backend`，codex 專屬走
+- [x] T1.5 `native_command_handlers.go`、`dashboard.go`：通用操作走 `Backend`，codex 專屬走
   `CodexExtras` + capability 檢查，false 時顯示 fallback（0.5 天）— T-P1-06
-- [ ] T1.6 `session_supervisor.go`、`lifecycle.go`、`screen.go:128` 改用 `Backend`；`factory` 型別更新
+- [x] T1.6 `session_supervisor.go`、`lifecycle.go`、`screen.go:128` 改用 `Backend`；`factory` 型別更新
   （0.5 天）— T-P1-07
-- [ ] T1.7 **前置條件：** 未修改的 `lumen_test.go` 在 T1.1–T1.6 後 `go test -race ./...` 全綠。之後才允許把測試
+- [x] T1.7 **前置條件：** 未修改的 `lumen_test.go` 在 T1.1–T1.6 後 `go test -race ./...` 全綠。之後才允許把測試
   改餵 normalized event 並逐步移除 shim；保留 codex 轉譯 golden test（0.5 天）— T-P1-08
 - [ ] T1.8 P1 驗收：`go test -race ./...`、`go vet ./...`、手動 smoke（一個 prompt、一個 approval、
   interrupt、fork、`/goal`、reconnect）與 P1 前一致 — T-P1-09
