@@ -88,8 +88,8 @@ spec: spec-lumen-backend-adapter
 
 ## P4：文件 — 0.5 天
 
-- [ ] T4.1 `README.md`：backend 概念、`--backend`、`LUMEN_BACKEND`、`/backend`、`backends.json` 範例、
+- [x] T4.1 `README.md`：backend 概念、`--backend`、`LUMEN_BACKEND`、`/backend`、`backends.json` 範例、
   Claude adapter 安裝與 pin 版本說明、認證說明（不放 secret）、預設變更的 breaking note
-- [ ] T4.2 `lumen --help` 文字更新；`docs/specs/lumen/SPEC.md` 加交叉參照與 Requirements 中 codex 專屬措辭
+- [x] T4.2 `lumen --help` 文字更新；`docs/specs/lumen/SPEC.md` 加交叉參照與 Requirements 中 codex 專屬措辭
   的限定語
-- [ ] T4.3 版本號 bump 建議（`appVersion`，預設改變屬 minor 以上）與 release note 草稿 — T-P4-01
+- [x] T4.3 版本號 bump 建議（`appVersion`，預設改變屬 minor 以上）與 release note 草稿 — T-P4-01

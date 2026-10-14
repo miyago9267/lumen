@@ -25,10 +25,15 @@ workspace 使用感；輸入框以下採 Claude Code 式的 compact session/cont
 嵌入 Lumen 的 `coralline` statusline。借用 interaction patterns，不搬運任何
 provider 的品牌、畫面資產或 shortcut parity。
 
+> **Backend 交叉參照**：Lumen 現在支援可插拔 backend（預設 `claude` via ACP，另有 `gemini`
+> 與 `codex`），設計與驗收見 [`docs/specs/backend-adapter/SPEC.md`](../backend-adapter/SPEC.md)。
+> 本文件中提到 Codex、`codex app-server`、Codex slash catalog 與 native subcommand 的
+> Requirements，除非另有說明，皆指 codex backend 時的行為。
+
 ## Requirements
 
-- 官方 `codex` binary、設定、session store 與既有 launcher 維持可用。
-- 新入口必須能啟動本機 `codex app-server`，不把 credentials 放進 command
+- 使用 codex backend 時，官方 `codex` binary、設定、session store 與既有 launcher 維持可用。
+- codex backend 時，新入口必須能啟動本機 `codex app-server`，不把 credentials 放進 command
   arguments、logs 或 repo。
 - 第一個 vertical slice 必須支援：new thread、resume thread、prompt
   input、assistant streaming、tool progress、approval request、tool user input
@@ -64,15 +69,15 @@ provider 的品牌、畫面資產或 shortcut parity。
 - `--minimal` 與 `--no-alt-screen` 提供 inline/scrollback rendering，保留 terminal
   scrollback 與低干擾 fallback。
 - UI 必須讓 model、reasoning effort、sandbox、approval policy、cwd 與 thread
-  name 可見，不偷偷覆蓋 Codex config。
-- app-server protocol version 必須與執行中的 `codex` 對齊；protocol failure
+  name 可見，不偷偷覆蓋 backend config（codex backend 時即 Codex config）。
+- codex backend 時，app-server protocol version 必須與執行中的 `codex` 對齊；protocol failure
   要明確顯示並安全退出。
 - `lumen` 與官方 `codex` 分開安裝、分開 rollback，更新官方 CLI 不得覆蓋
   custom frontend。
-- 互動 composer 輸入 `/` 時，必須顯示與執行中官方 Codex TUI 對齊的 stable
+- codex backend 時，互動 composer 輸入 `/` 必須顯示與執行中官方 Codex TUI 對齊的 stable
   slash-command catalog；popup 必須支援 description、上下選擇、`Tab` completion、
   `Enter` execute 與 `Esc` close，且開始輸入 arguments 後不再誤顯示 command suggestions。
-- catalog 內 command 必須維持 canonical name 與 alias；已知但尚未能由 Lumen 執行的
+- codex backend 時，catalog 內 command 必須維持 canonical name 與 alias；已知但尚未能由 Lumen 執行的
   command 必須顯示明確 fallback，不得把 slash text 當成普通 model prompt。
 - `lumen <native-subcommand> ...` 與 `lumen codex ...` 必須將官方 Codex CLI 的
   stdin/stdout/stderr、arguments 與 exit code 交給原生 binary，並保留 Lumen 自己的

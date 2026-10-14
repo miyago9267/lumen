@@ -17,7 +17,7 @@ import (
 
 const (
 	appName    = "lumen"
-	appVersion = "0.3.1"
+	appVersion = "0.4.0"
 )
 
 type options struct {
@@ -121,24 +121,29 @@ Usage:
   lumen <CODEX-SUBCOMMAND> [ARGS]
   lumen codex <CODEX-ARGS>
 
+Backends: claude (default, via claude-agent-acp), gemini (gemini --acp), codex
+(native app-server), or a name from ~/.config/lumen/backends.json. Selection
+order: --backend, LUMEN_BACKEND, backends.json "default", then claude. Install the
+Claude adapter with: npm i -g @agentclientprotocol/claude-agent-acp@0.90.0
+Switch backends in a session with /backend.
+
 Native Codex subcommands are passed to the installed codex binary with their
-original stdio and exit code. Interactive prompts use the local codex
-app-server and do not replace Codex configuration.
+original stdio and exit code.
 
 Options:
 `)
 		fs.PrintDefaults()
 	}
 	fs.StringVar(&opts.backend, "backend", "", "backend to use: claude, gemini, codex or a name from backends.json (default: LUMEN_BACKEND, config default, then claude)")
-	fs.StringVar(&opts.resume, "resume", "", "resume a Codex thread by id")
+	fs.StringVar(&opts.resume, "resume", "", "resume a thread by id (backend must support session resume)")
 	fs.BoolVar(&opts.continue_, "continue", false, "resume the newest thread for this directory")
 	fs.BoolVar(&opts.fullscreen, "fullscreen", true, "use the full-screen app shell (default)")
 	fs.BoolVar(&opts.minimal, "minimal", false, "use inline scrollback mode instead")
 	fs.BoolVar(&opts.minimal, "no-alt-screen", false, "alias for --minimal")
-	fs.StringVar(&opts.runtime.model, "model", "", "override the configured model for this session")
-	fs.StringVar(&opts.runtime.reasoningEffort, "reasoning-effort", "", "override reasoning effort for turns")
-	fs.StringVar(&opts.runtime.sandbox, "sandbox", "", "override sandbox: read-only, workspace-write, danger-full-access")
-	fs.StringVar(&opts.runtime.approvalPolicy, "approval-policy", "", "override approval: untrusted, on-request, never")
+	fs.StringVar(&opts.runtime.model, "model", "", "override the configured model for this session (codex backend only)")
+	fs.StringVar(&opts.runtime.reasoningEffort, "reasoning-effort", "", "override reasoning effort for turns (codex backend only)")
+	fs.StringVar(&opts.runtime.sandbox, "sandbox", "", "override sandbox: read-only, workspace-write, danger-full-access (codex backend only)")
+	fs.StringVar(&opts.runtime.approvalPolicy, "approval-policy", "", "override approval: untrusted, on-request, never (codex backend only)")
 	fs.StringVar(&opts.runtime.approvalPolicy, "ask-for-approval", "", "alias for --approval-policy")
 	fs.BoolVar(&opts.version, "version", false, "print version")
 	if err := fs.Parse(args); err != nil {

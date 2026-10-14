@@ -19,7 +19,7 @@ spec: spec-lumen-backend-adapter
 | P1 | T1.1-T1.7 完成；T1.8 待手動 smoke | `go test -race ./...`、`go vet ./...`、`gofmt -l .` 皆乾淨 |
 | P2 | T2.0-T2.7 完成；T2.8 待真實 adapter 手動 smoke | fake agent 全套 T-P2 綠（T-P2-16 為 M，未跑） |
 | P3 | T3.1-T3.4 完成；T-P3-11 為 M（僅以假 codex 驗證啟動路徑） | `go test -race -count=1 ./...`、`go vet ./...`、`gofmt -l .` 皆乾淨 |
-| P4 | 未開始 | |
+| P4 | T4.1-T4.3 完成 | README、`--help`、lumen SPEC 交叉參照、`appVersion` 0.4.0；`go test -race -count=1 ./...`、`go vet ./...`、`gofmt -l .` 皆乾淨 |
 
 ## P1 驗收（2026-10-14）
 
@@ -117,4 +117,24 @@ T-P3-11（M）以假 `codex`（`LUMEN_CODEX_BIN`）確認 `LUMEN_BACKEND=codex` 
    explicit approval 在 card 出現後 400ms 內忽略數字鍵（取消鍵不受限，clock 可注入）。
 10. 流程備註：T3.1 的實作先於測試寫成（測試一次通過，沒有先紅）；T3.2 之後皆先寫失敗測試。
 
-未完成：T1.8、T2.8 的真實 codex / claude adapter 手動 smoke；P4 文件。
+未完成：T1.8、T2.8 的真實 codex / claude adapter 手動 smoke。
+
+## P4 實作（2026-10-14）
+
+- T4.1：`README.md` 改寫 intro / 安裝，新增 Backend 章節（選擇順序、`/backend`、`backends.json`、
+  permission 行為、capability fallback、breaking-change note）。
+- T4.2：`lumen --help` 加 backend 說明與 adapter 安裝指令，codex 專屬旗標標註 `(codex backend only)`；
+  `docs/specs/lumen/SPEC.md` 加交叉參照並在 codex 專屬 Requirements 加「codex backend 時」限定語。
+- T4.3：`appVersion` 0.3.1 -> 0.4.0（預設 backend 改變，minor bump）。
+
+### Release notes 草稿（0.4.0）
+
+- Breaking：預設 backend 由 `codex` 改為 `claude`（ACP，`claude-agent-acp`）。維持舊行為：
+  `LUMEN_BACKEND=codex` 或 `backends.json` 設 `"default": "codex"`。
+- 新增 `--backend`、`LUMEN_BACKEND`、`/backend`、`~/.config/lumen/backends.json`（owner / mode 檢查，不支援 `env`）。
+- 新增 `gemini --acp` backend；codex backend 保留 fork / goal / review / compact。
+- Claude adapter 需自行安裝：`npm i -g @agentclientprotocol/claude-agent-acp@0.90.0`，Lumen 不會自動下載。
+- Permission 永不自動允許；非 default mode 顯示警示；approval card 出現後 400ms 內忽略數字鍵。
+- codex 專屬旗標（`--model` 等）搭配其他 backend 會 exit 2。
+
+未完成：T1.8、T2.8 的真實 codex / claude adapter 手動 smoke。
