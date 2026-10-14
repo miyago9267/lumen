@@ -142,14 +142,20 @@ func (u *ui) screenTurnRows(blocks []screenBlock, width, ordinal int) []screenTr
 			turnID:  id,
 		}, width, key, id, ordinal)...)
 	}
-	rows = append(rows, screenTurnActionRow(key, id, ordinal, width))
+	canFork := u.canFork()
+	rows = append(rows, screenTurnActionRow(key, id, ordinal, width, canFork))
 	rows = append(rows, screenTranscriptRow{
 		rendered:    screenCardBorder("└", "┘", width),
-		tooltip:     screenTurnTooltip(ordinal, id != ""),
+		tooltip:     screenTurnTooltip(ordinal, id != "" && canFork),
 		turnKey:     key,
 		turnID:      id,
 		turnOrdinal: ordinal,
 	})
+	if !canFork {
+		for index := range rows {
+			rows[index].tooltip = strings.Replace(rows[index].tooltip, " · [fork] branch from here", "", 1)
+		}
+	}
 	return rows
 }
 
@@ -290,7 +296,12 @@ func screenTurnBlockTooltip(block screenBlock, ordinal int, canFork bool) string
 	return fmt.Sprintf("turn %d · %s · %s", ordinal, screenBlockLabel(block), truncateDisplay(preview, 72))
 }
 
-func screenTurnActionRow(key, id string, ordinal, width int) screenTranscriptRow {
+// canFork 回報目前 backend 是否能從某個 turn 分支；沒有 backend（重連中）時沿用 codex 行為。
+func (u *ui) canFork() bool {
+	return u.backend == nil || u.backend.Caps().ForkAtTurn
+}
+
+func screenTurnActionRow(key, id string, ordinal, width int, canFork bool) screenTranscriptRow {
 	const askLabel = "[ask]"
 	const forkLabel = "[fork]"
 	value := askLabel
@@ -298,7 +309,7 @@ func screenTurnActionRow(key, id string, ordinal, width int) screenTranscriptRow
 	if action, ok := screenActionRangeFor(screenTurnActionAsk, 2, askLabel, width); ok {
 		actions = append(actions, action)
 	}
-	if id != "" {
+	if id != "" && canFork {
 		value += "  " + forkLabel
 		forkStart := 2 + displayWidth(askLabel+"  ")
 		if action, ok := screenActionRangeFor(screenTurnActionFork, forkStart, forkLabel, width); ok {
@@ -307,7 +318,7 @@ func screenTurnActionRow(key, id string, ordinal, width int) screenTranscriptRow
 	}
 	return screenTranscriptRow{
 		rendered:    screenCardContent(value, screenInfo, width),
-		tooltip:     screenTurnTooltip(ordinal, id != ""),
+		tooltip:     screenTurnTooltip(ordinal, id != "" && canFork),
 		turnKey:     key,
 		turnID:      id,
 		turnOrdinal: ordinal,

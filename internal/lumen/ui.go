@@ -865,9 +865,22 @@ func (u *ui) handleCommand(value string) error {
 	if !ok {
 		return nil
 	}
-	command, ok := slashCommandByName(name)
+	command, ok := u.slashCommandByName(name)
 	if !ok {
+		if _, known := slashCommandByName(name); known && u.dynamicCatalog() {
+			u.clearCommandInput()
+			u.commandMessage("/"+name+" is not supported by backend "+u.backend.Name(), muted)
+			return nil
+		}
 		return fmt.Errorf("unknown command %q; try /help", "/"+name)
+	}
+	if command.agent {
+		if u.busy {
+			return u.queuePrompt()
+		}
+		text := strings.TrimSpace(value)
+		u.clearCommandInput()
+		return u.submit(text)
 	}
 	u.clearCommandInput()
 	switch command.name {
@@ -901,10 +914,10 @@ func (u *ui) showHelp() {
 	u.input = nil
 	u.cursor = 0
 	if u.screenMode {
-		u.screenAdd(screenInfo, slashCommandHelpText())
+		u.screenAdd(screenInfo, u.slashCommandHelpText())
 		return
 	}
-	fmt.Fprintf(u.out, "\n%s%s%s\n", bold, slashCommandHelpText(), reset)
+	fmt.Fprintf(u.out, "\n%s%s%s\n", bold, u.slashCommandHelpText(), reset)
 	u.renderPrompt()
 }
 
@@ -1642,7 +1655,7 @@ func (u *ui) renderPrompt() {
 		if selected >= len(items) {
 			selected = len(items) - 1
 		}
-		fmt.Fprintf(u.out, "\n%s⌘ Codex commands%s", cyan, reset)
+		fmt.Fprintf(u.out, "\n%s%s%s", cyan, u.slashCommandsTitle(), reset)
 		for index, command := range items {
 			if index == 6 {
 				break

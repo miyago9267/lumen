@@ -18,7 +18,7 @@ spec: spec-lumen-backend-adapter
 | G0 | 完成 | Miyago 核准 SPEC（2026-10-14），ADR-4 自寫 ACP client、JSON config、預設改 Claude 均已接受 |
 | P1 | T1.1-T1.7 完成；T1.8 待手動 smoke | `go test -race ./...`、`go vet ./...`、`gofmt -l .` 皆乾淨 |
 | P2 | T2.0-T2.7 完成；T2.8 待真實 adapter 手動 smoke | fake agent 全套 T-P2 綠（T-P2-16 為 M，未跑） |
-| P3 | 未開始 | |
+| P3 | T3.1-T3.4 完成；T-P3-11 為 M（僅以假 codex 驗證啟動路徑） | `go test -race -count=1 ./...`、`go vet ./...`、`gofmt -l .` 皆乾淨 |
 | P4 | 未開始 | |
 
 ## P1 驗收（2026-10-14）
@@ -81,3 +81,40 @@ spec: spec-lumen-backend-adapter
 
 未完成：T2.8 真實 `claude-agent-acp` 手動 smoke（prompt、approval、cancel、kill 後 reconnect）與 T-P2-16
 結果記錄；依指示本輪未跑真實 model prompt。
+
+## P3 實作（2026-10-14）
+
+驗證：`go test -race -count=1 ./...`、`go vet ./...`、`gofmt -l .` 皆乾淨。T-P3-01..10、12..14 自動測試通過；
+T-P3-11（M）以假 `codex`（`LUMEN_CODEX_BIN`）確認 `LUMEN_BACKEND=codex` 啟動的仍是
+`codex app-server --listen stdio:// ...` 且 codex 旗標被接受，未用真實 codex 跑 prompt。
+
+偏差與決定：
+
+1. `backends.json` 同名 entry 整筆取代內建（不逐欄位合併）。`type: codex` 的 entry 不接受 `command` / `args`
+   （明確報錯，不默默忽略）。Claude 的 `allowDangerouslySkipPermissions:false` 以 command / args 是否含
+   `claude-agent-acp` 判斷是否附上（涵蓋使用者明確 opt-in 的 `npx`）；安裝指令只在直接用 `claude-agent-acp` 時顯示。
+2. 相對的 `XDG_CONFIG_HOME` 視為無效並退回 `~/.config`（避免設定檔位置被導向 cwd）。owner / mode 以 `os.Stat`
+   （跟隨 symlink）檢查目標檔；不檢查上層目錄權限。
+3. 設定錯誤、未知 backend、codex 專屬旗標在非 codex backend 一律 exit 2，且發生在檢查 TTY 與啟動任何 backend 之前。
+   找不到 `claude-agent-acp` 時啟動以 exit 1 結束並印出安裝指令（不自動下載、不用 npx）。
+4. `--resume` / `--continue` 對沒有 `SessionResume` / `SessionList` 的 backend 明確報錯（`backend X cannot ...`）。
+5. `/backend`：無參數在 fullscreen 開 modal picker（上下 / Enter / 數字鍵 / Esc），inline 模式列出清單並提示
+   `/backend <name>`。picker 對非目前 backend 只顯示種類與 command basename，目前者附即時 capability。
+   重連中（`u.backend == nil`）也拒絕切換，避免與 reconnect supervisor 競爭；切到同名 backend 為 no-op。
+   切換成功後 `overrides`、`agentCommands`、mode 警示全部重置；supervisor 的 factory 每次重連才讀
+   `u.serverFactory`，所以重連的是目前 backend。
+6. Slash catalog 依 backend 即時計算（`SlashCatalog == "dynamic"`）：Lumen-local（help、status、dashboard、backend、
+   copy、diff、pwd、usage、statusline、clear、new、resume、stop、quit）加上 agent 的 `availableCommands`
+   （與 local 同名者以 local 為準）；其餘 codex catalog 指令顯示 `/<cmd> is not supported by backend <name>`，
+   不送出 prompt，也不記錄 codex runtime override。agent command 以 `"/name args"` 文字送 `session/prompt`，
+   busy 時進 queue。
+7. `[fork]` 與其 tooltip 只在 `ForkAtTurn` 為 true 時渲染；沒有 backend（重連中）時沿用 codex 行為。
+   Dashboard / Ctrl+U：沒有 `SessionList` 顯示 `listing sessions is not supported by backend X`，沒有
+   `SessionResume` 時 attach 與 `/resume` 顯示 fallback；dashboard 說明文字用目前 backend 名稱。
+8. T-P2-12 leftover：reconnect 退回新 session 時（`reconnectResult.freshSession`）顯示
+   `agent context lost · started a new session`。
+9. 驗證者 follow-up（P2）：ACP permission 逾時新增 `EvApprovalExpired`（UI 清除對應 card 並顯示狀態列）；
+   explicit approval 在 card 出現後 400ms 內忽略數字鍵（取消鍵不受限，clock 可注入）。
+10. 流程備註：T3.1 的實作先於測試寫成（測試一次通過，沒有先紅）；T3.2 之後皆先寫失敗測試。
+
+未完成：T1.8、T2.8 的真實 codex / claude adapter 手動 smoke；P4 文件。

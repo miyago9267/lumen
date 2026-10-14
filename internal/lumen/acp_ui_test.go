@@ -160,3 +160,18 @@ func TestExplicitApprovalCancelNotGuarded(t *testing.T) {
 		t.Fatalf("resolved = %v", backend.resolved)
 	}
 }
+
+// T-P2-12：reconnect 退回新 session 時附 notice，讓使用者知道 agent context 已遺失。
+func TestReconnectFreshSessionShowsNotice(t *testing.T) {
+	for _, fresh := range []bool{true, false} {
+		frontend := &ui{screenMode: true, cwd: "/tmp", thread: threadSummary{ID: "old"}}
+		frontend.adoptReconnectResult(reconnectResult{backend: &fakeBackend{}, thread: threadSummary{ID: "new"}, freshSession: fresh})
+		plain := stripANSI(frontend.screenFrame(120, 30))
+		if got := strings.Contains(plain, "agent context lost · started a new session"); got != fresh {
+			t.Fatalf("fresh=%v notice shown=%v: %q", fresh, got, plain)
+		}
+		if !strings.Contains(plain, "reconnected") {
+			t.Fatalf("reconnected status missing: %q", plain)
+		}
+	}
+}

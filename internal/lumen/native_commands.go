@@ -12,6 +12,65 @@ type slashCommand struct {
 	description        string
 	aliases            []string
 	supportsInlineArgs bool
+	agent              bool // backend（ACP）宣告的 command；執行時以 "/name args" 文字送 prompt
+}
+
+// localSlashCommands 是不需要 backend 專屬功能、任何 backend 都可用的 Lumen-local command；
+// 非 codex（dynamic catalog）backend 的 popup 只顯示這些加上 agent 的 availableCommands。
+var localSlashCommands = map[string]bool{
+	"help": true, "status": true, "dashboard": true, "backend": true, "copy": true, "diff": true,
+	"pwd": true, "usage": true, "statusline": true, "clear": true, "new": true, "resume": true,
+	"stop": true, "quit": true,
+}
+
+// dynamicCatalog 回報目前 backend 是否由 backend 推送 slash catalog（ACP）。
+// 沒有 backend（重連中）時沿用 codex 的靜態 catalog。
+func (u *ui) dynamicCatalog() bool {
+	return u.backend != nil && u.backend.Caps().SlashCatalog == "dynamic"
+}
+
+// slashCatalog 依目前 backend 即時計算：靜態 backend 用內建 catalog；
+// dynamic backend 用 Lumen-local 加上 agent command（與 local 同名者以 local 為準）。
+func (u *ui) slashCatalog() []slashCommand {
+	if !u.dynamicCatalog() {
+		return slashCommandCatalog
+	}
+	catalog := make([]slashCommand, 0, len(localSlashCommands)+len(u.agentCommands))
+	taken := map[string]bool{}
+	for _, command := range slashCommandCatalog {
+		if !localSlashCommands[command.name] {
+			continue
+		}
+		catalog = append(catalog, command)
+		taken[command.name] = true
+		for _, alias := range command.aliases {
+			taken[alias] = true
+		}
+	}
+	for _, command := range u.agentCommands {
+		name := strings.ToLower(strings.TrimSpace(strings.TrimPrefix(command.Name, "/")))
+		if name == "" || taken[name] {
+			continue
+		}
+		taken[name] = true
+		catalog = append(catalog, slashCommand{name: name, description: command.Description, supportsInlineArgs: true, agent: true})
+	}
+	return catalog
+}
+
+func (u *ui) slashCommandByName(name string) (slashCommand, bool) {
+	return lookupSlashCommand(u.slashCatalog(), name)
+}
+
+func (u *ui) filterSlashCommands(query string) []slashCommand {
+	return filterSlashCommandsIn(u.slashCatalog(), query)
+}
+
+func (u *ui) slashCommandsTitle() string {
+	if u.dynamicCatalog() {
+		return "⌘ " + u.backend.Name() + " commands"
+	}
+	return "⌘ Codex commands"
 }
 
 // Keep this catalog in the same order as the stable Codex TUI command list.
@@ -76,11 +135,15 @@ var slashCommandCatalog = []slashCommand{
 }
 
 func slashCommandByName(name string) (slashCommand, bool) {
+	return lookupSlashCommand(slashCommandCatalog, name)
+}
+
+func lookupSlashCommand(catalog []slashCommand, name string) (slashCommand, bool) {
 	name = strings.TrimSpace(strings.TrimPrefix(strings.ToLower(name), "/"))
 	if fields := strings.Fields(name); len(fields) > 0 {
 		name = fields[0]
 	}
-	for _, command := range slashCommandCatalog {
+	for _, command := range catalog {
 		if command.name == name {
 			return command, true
 		}
@@ -94,15 +157,19 @@ func slashCommandByName(name string) (slashCommand, bool) {
 }
 
 func filterSlashCommands(query string) []slashCommand {
+	return filterSlashCommandsIn(slashCommandCatalog, query)
+}
+
+func filterSlashCommandsIn(catalog []slashCommand, query string) []slashCommand {
 	query = strings.TrimSpace(strings.TrimPrefix(strings.ToLower(query), "/"))
 	if fields := strings.Fields(query); len(fields) > 0 {
 		query = fields[0]
 	}
-	commands := make([]slashCommand, 0, len(slashCommandCatalog))
+	commands := make([]slashCommand, 0, len(catalog))
 	if query == "" {
-		return append(commands, slashCommandCatalog...)
+		return append(commands, catalog...)
 	}
-	for _, command := range slashCommandCatalog {
+	for _, command := range catalog {
 		if strings.HasPrefix(command.name, query) {
 			commands = append(commands, command)
 		}
@@ -110,7 +177,7 @@ func filterSlashCommands(query string) []slashCommand {
 	if len(commands) > 0 {
 		return commands
 	}
-	for _, command := range slashCommandCatalog {
+	for _, command := range catalog {
 		if isSubsequence(query, command.name) {
 			commands = append(commands, command)
 		}
@@ -164,7 +231,7 @@ func (u *ui) commandPopupVisible() bool {
 	if !ok || args != "" {
 		return false
 	}
-	return len(filterSlashCommands(query)) > 0
+	return len(u.filterSlashCommands(query)) > 0
 }
 
 func (u *ui) commandPopupItems() []slashCommand {
@@ -172,7 +239,7 @@ func (u *ui) commandPopupItems() []slashCommand {
 	if !ok {
 		return nil
 	}
-	return filterSlashCommands(query)
+	return u.filterSlashCommands(query)
 }
 
 func (u *ui) selectedSlashCommand() (slashCommand, bool) {
@@ -241,7 +308,7 @@ func (u *ui) handleCommandPopupKey(key keyEvent) (bool, error) {
 		return true, nil
 	case keyEnter:
 		query, _, _ := slashCommandInput(string(u.input))
-		if _, ok := slashCommandByName(query); !ok {
+		if _, ok := u.slashCommandByName(query); !ok {
 			if !u.completeSlashCommand() {
 				return true, nil
 			}
@@ -259,7 +326,7 @@ func (u *ui) screenCommandPopupLines(width int) []string {
 	if len(items) == 0 {
 		return nil
 	}
-	lines := []string{screenComposerLine("⌘ Codex commands", width, screenInfo)}
+	lines := []string{screenComposerLine(u.slashCommandsTitle(), width, screenInfo)}
 	selected := u.commandPopupIndex
 	if selected < 0 {
 		selected = 0

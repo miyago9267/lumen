@@ -39,6 +39,11 @@ func (u *ui) refreshDashboard() error {
 		u.dashboardRows = []threadSummary{u.thread}
 		return nil
 	}
+	if !backend.Caps().SessionList {
+		u.dashboardRows = []threadSummary{u.thread}
+		u.dashboardIndex = 0
+		return fmt.Errorf("listing sessions is not supported by backend %s", backend.Name())
+	}
 	threads, err := backend.ListSessions("", maxDashboardSessions)
 	if err != nil {
 		return fmt.Errorf("list sessions: %w", err)
@@ -142,6 +147,10 @@ func (u *ui) attachDashboard(index int) error {
 	if backend == nil {
 		return fmt.Errorf("session attach requires app-server")
 	}
+	if !backend.Caps().SessionResume {
+		u.dashboardError = "resume is not supported by backend " + backend.Name()
+		return nil
+	}
 	resumed, err := backend.ResumeSession(thread.ID, u.cwd, u.overrides)
 	if err != nil {
 		u.dashboardError = "attach failed · " + err.Error()
@@ -205,10 +214,18 @@ func (u *ui) startDashboardSession() error {
 	return nil
 }
 
+// backendLabel 是顯示用的 backend 名稱；沒有 backend（重連中）時沿用 Codex。
+func (u *ui) backendLabel() string {
+	if u.backend == nil || u.backend.Name() == "codex" {
+		return "Codex"
+	}
+	return u.backend.Name()
+}
+
 func (u *ui) screenDashboardRows(width int) []screenTranscriptRow {
 	rows := []screenTranscriptRow{{
 		rendered: screenStyledLine(screenInfo, "dashboard  ·  session supervisor  ·  all sessions", width),
-		tooltip:  "resume picker · all top-level Codex sessions",
+		tooltip:  "resume picker · all top-level " + u.backendLabel() + " sessions",
 	}, {
 		rendered: screenStyledLine(screenStatus, "  resume history · attach · new session · refresh", width),
 		tooltip:  "dashboard controls",

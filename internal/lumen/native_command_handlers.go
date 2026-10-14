@@ -8,8 +8,16 @@ import (
 )
 
 func slashCommandHelpText() string {
+	return catalogHelpText(slashCommandCatalog)
+}
+
+func (u *ui) slashCommandHelpText() string {
+	return catalogHelpText(u.slashCatalog())
+}
+
+func catalogHelpText(catalog []slashCommand) string {
 	lines := []string{"commands"}
-	for _, command := range slashCommandCatalog {
+	for _, command := range catalog {
 		aliases := ""
 		if len(command.aliases) > 0 {
 			aliases = " (" + strings.Join(command.aliases, ", ") + ")"
@@ -342,6 +350,10 @@ func (u *ui) commandDelete(args string) error {
 
 func (u *ui) commandResume(args string) error {
 	threadID := strings.TrimSpace(args)
+	if backend := u.backend; backend != nil && !backend.Caps().SessionResume {
+		u.commandMessage("/resume is not supported by backend "+backend.Name(), muted)
+		return nil
+	}
 	if threadID == "" {
 		if u.screenMode {
 			return u.openDashboard()

@@ -616,6 +616,9 @@ func TestACPReconnectResumesViaLoad(t *testing.T) {
 	if result.err != nil || result.thread.ID != "old" || len(result.thread.Turns) != 2 {
 		t.Fatalf("reconnect result = %#v", result)
 	}
+	if result.freshSession {
+		t.Fatal("resumed session was reported as a fresh session")
+	}
 	result.backend.Close()
 }
 
@@ -625,6 +628,9 @@ func TestACPReconnectFallsBackToNewSession(t *testing.T) {
 	result := reconnectWithSnapshot(factory, reconnectSnapshot{threadID: "gone", cwd: t.TempDir()}, nil)
 	if result.err != nil || result.thread.ID != "sess-new" {
 		t.Fatalf("fresh session fallback = %#v", result)
+	}
+	if !result.freshSession {
+		t.Fatal("new-session fallback was not flagged")
 	}
 	result.backend.Close()
 

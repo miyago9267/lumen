@@ -208,7 +208,7 @@ func (u *ui) runFullscreen(initialPrompt string) error {
 				scheduleReconnect()
 				invalidate()
 			} else {
-				u.adoptReconnected(result.backend, result.thread)
+				u.adoptReconnectResult(result)
 				reconnectAttempt = 0
 				invalidate()
 			}

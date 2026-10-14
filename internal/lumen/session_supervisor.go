@@ -120,12 +120,14 @@ func reconnectWithSnapshot(factory func() (Backend, error), snapshot reconnectSn
 		err = reconnectCall(done, func() error { return backend.Open(context.Background()) })
 	}
 	var thread threadSummary
+	fresh := false
 	if err == nil {
 		if snapshot.threadID != "" {
 			thread, err = reconnectCallWithThread(done, backend, func() (threadSummary, error) {
 				return backend.ResumeSession(snapshot.threadID, snapshot.cwd, snapshot.overrides)
 			})
 			if canStartFreshThreadAfterResume(err, snapshot.hasTranscriptContent) {
+				fresh = true
 				thread, err = reconnectCallWithThread(done, backend, func() (threadSummary, error) {
 					return backend.NewSession(snapshot.cwd, snapshot.overrides)
 				})
@@ -139,7 +141,7 @@ func reconnectWithSnapshot(factory func() (Backend, error), snapshot reconnectSn
 	if err != nil && backend != nil {
 		backend.Close()
 	}
-	result := reconnectResult{backend: backend, thread: thread, err: err}
+	result := reconnectResult{backend: backend, thread: thread, err: err, freshSession: fresh && err == nil}
 	if reconnectDone(done) {
 		if result.backend != nil {
 			result.backend.Close()

@@ -20,6 +20,8 @@ type reconnectResult struct {
 	backend Backend
 	thread  threadSummary
 	err     error
+	// freshSession 表示原 session 無法接回，已退回新 session（agent context 遺失）。
+	freshSession bool
 }
 
 type terminalLifecycle struct {
@@ -252,6 +254,14 @@ func (u *ui) adoptReconnected(backend Backend, thread threadSummary) {
 	}
 	u.printStatus("reconnected · "+shortID(u.thread.ID), green)
 	u.renderPrompt()
+}
+
+// adoptReconnectResult 套用重連結果；退回新 session 時附 notice。
+func (u *ui) adoptReconnectResult(result reconnectResult) {
+	u.adoptReconnected(result.backend, result.thread)
+	if result.freshSession {
+		u.printStatus("agent context lost · started a new session", yellow)
+	}
 }
 
 func (u *ui) replayThreadHistory(thread threadSummary) {

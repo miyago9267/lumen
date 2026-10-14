@@ -78,13 +78,13 @@ spec: spec-lumen-backend-adapter
 
 ## P3：Claude 預設、選擇與切換 — 1.5–2 天
 
-- [ ] T3.1 `backend_config.go`：內建 registry（claude / gemini / codex）、只讀 `${XDG_CONFIG_HOME:-~/.config}/lumen/backends.json`、
+- [x] T3.1 `backend_config.go`：內建 registry（claude / gemini / codex）、只讀 `${XDG_CONFIG_HOME:-~/.config}/lumen/backends.json`、
   owner/權限檢查（uid、group/world-writable -> exit 2）、key 白名單（拒絕 `env`）、覆蓋規則、驗證（`type`、`command`）（0.5 天）— T-P3-01, T-P3-02
-- [ ] T3.2 `--backend` flag、`LUMEN_BACKEND`、優先序、未知 name 錯誤；`Run` 改用 registry 建 backend；
+- [x] T3.2 `--backend` flag、`LUMEN_BACKEND`、優先序、未知 name 錯誤；`Run` 改用 registry 建 backend；
   預設改 `claude`；非 codex backend 的 codex 專屬旗標報錯（0.5 天）— T-P3-03, T-P3-04, T-P3-05, T-P3-11
-- [ ] T3.3 `/backend` slash command：picker、`/backend <name>`、busy 拒絕、atomic swap、分隔 status、
+- [x] T3.3 `/backend` slash command：picker、`/backend <name>`、busy 拒絕、atomic swap、分隔 status、
   catalog 重算（0.75 天）— T-P3-06, T-P3-07, T-P3-08
-- [ ] T3.4 capability fallback 文案與 `[fork]` 條件渲染、ACP 動態 slash catalog（0.25 天）— T-P3-09, T-P3-10
+- [x] T3.4 capability fallback 文案與 `[fork]` 條件渲染、ACP 動態 slash catalog（0.25 天）— T-P3-09, T-P3-10
 
 ## P4：文件 — 0.5 天
 
