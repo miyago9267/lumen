@@ -1,0 +1,87 @@
+package lumen
+
+import (
+	"strings"
+	"testing"
+)
+
+type approvalRecorder struct {
+	fakeBackend
+	resolved [][2]string
+}
+
+func (b *approvalRecorder) ResolveApproval(reqID, optionID string) error {
+	b.resolved = append(b.resolved, [2]string{reqID, optionID})
+	return nil
+}
+
+func explicitApproval() EvApprovalRequest {
+	return EvApprovalRequest{
+		ReqID: "0", Title: "$ rm x", Explicit: true,
+		Options: []ApprovalOption{
+			{ID: "allow-once", Label: "Allow once", Kind: OptionAllowOnce},
+			{ID: "allow-always", Label: "Always allow", Kind: OptionAllowAlways},
+			{ID: "reject", Label: "Reject", Kind: OptionRejectOnce},
+		},
+	}
+}
+
+// T-P2-21：explicit approval 沒有預設選項；Enter 不得放行，只有明確按鍵才回覆。
+func TestExplicitApprovalHasNoDefaultFocus(t *testing.T) {
+	backend := &approvalRecorder{}
+	frontend := &ui{screenMode: true, backend: backend}
+	frontend.handleEvent(explicitApproval())
+	if frontend.approval == nil {
+		t.Fatal("approval card not shown")
+	}
+	if err := frontend.handleKey(keyEvent{typ: keyEnter}); err != nil {
+		t.Fatal(err)
+	}
+	if len(backend.resolved) != 0 || frontend.approval == nil {
+		t.Fatalf("Enter resolved an explicit approval: %v", backend.resolved)
+	}
+	for _, key := range []rune{'a', 'y', 's'} {
+		_ = frontend.handleKey(keyEvent{typ: keyRune, rune: key})
+	}
+	if len(backend.resolved) != 0 {
+		t.Fatalf("letter keys resolved an explicit approval: %v", backend.resolved)
+	}
+	if hint := frontend.approval.hint(); !strings.Contains(hint, "[1] Allow once") || !strings.Contains(hint, "[3] Reject") {
+		t.Fatalf("hint = %q", hint)
+	}
+
+	if err := frontend.handleKey(keyEvent{typ: keyRune, rune: '3'}); err != nil {
+		t.Fatal(err)
+	}
+	if len(backend.resolved) != 1 || backend.resolved[0] != [2]string{"0", "reject"} || frontend.approval != nil {
+		t.Fatalf("resolved = %v", backend.resolved)
+	}
+}
+
+func TestExplicitApprovalEscapeCancels(t *testing.T) {
+	backend := &approvalRecorder{}
+	frontend := &ui{screenMode: true, backend: backend}
+	frontend.handleEvent(explicitApproval())
+	if err := frontend.handleKey(keyEvent{typ: keyEscape}); err != nil {
+		t.Fatal(err)
+	}
+	if len(backend.resolved) != 1 || backend.resolved[0][1] != CancelApprovalID {
+		t.Fatalf("resolved = %v", backend.resolved)
+	}
+}
+
+func TestModeWarningStaysInStatusBarUntilCleared(t *testing.T) {
+	frontend := &ui{screenMode: true, backend: &fakeBackend{}}
+	frontend.handleEvent(EvModeWarning{Mode: "auto", Text: "permissions: auto (from agent settings)"})
+	if label := frontend.screenStatusLabel(); !strings.Contains(label, "permissions: auto (from agent settings)") {
+		t.Fatalf("status label = %q", label)
+	}
+	frontend.busy = true
+	if label := frontend.screenStatusLabel(); !strings.Contains(label, "permissions: auto") {
+		t.Fatalf("busy status label lost the warning: %q", label)
+	}
+	frontend.handleEvent(EvModeWarning{Mode: "default"})
+	if label := frontend.screenStatusLabel(); strings.Contains(label, "permissions:") {
+		t.Fatalf("warning not cleared: %q", label)
+	}
+}

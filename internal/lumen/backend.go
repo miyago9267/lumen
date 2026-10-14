@@ -125,6 +125,10 @@ const (
 	OptionOther        ApprovalOptionKind = "other"
 )
 
+// CancelApprovalID 是 ResolveApproval 表示「使用者取消」的保留值；不會與任何 backend 的 option id 相同
+// （例如 Gemini 自己就有 id 為 "cancel" 的 option）。
+const CancelApprovalID = "\x00lumen:cancel"
+
 type ApprovalOption struct {
 	ID    string
 	Label string
@@ -191,11 +195,34 @@ type EvSessionTitle struct {
 	Title     string
 }
 
-// EvUsage.Size 為 nil 表示 backend 沒有回報 context window。
+// UsageCost 是 backend 回報的累計花費（ACP usage_update.cost）。
+type UsageCost struct {
+	Amount   float64
+	Currency string
+}
+
+// EvUsage.Size 為 nil 表示 backend 沒有回報 context window；Cost 為 nil 表示沒有花費資訊。
 type EvUsage struct {
 	Used      int64
 	Size      *int64
 	Breakdown *UsageBreakdown
+	Cost      *UsageCost
+}
+
+// SlashCommand 是 backend 動態宣告的 slash command（ACP available_commands_update）。
+type SlashCommand struct {
+	Name        string
+	Description string
+}
+
+// EvCommandsUpdated 取代目前的動態 slash catalog。
+type EvCommandsUpdated struct{ Commands []SlashCommand }
+
+// EvModeWarning 回報 backend 的 permission mode 狀態；Text 為空表示沒有警示（mode 為 default）。
+// Text 由 UI 持續顯示在 status bar。
+type EvModeWarning struct {
+	Mode string
+	Text string
 }
 
 // EvTurnCompleted.Label 是 UI 逐字顯示的原始字串（空字串視為 completed）。
@@ -211,13 +238,16 @@ type EvNotice struct {
 	Text  string
 }
 
+// EvApprovalRequest.Explicit 為 true 時（ACP），UI 不得預設任何選項：Enter 不做決定，
+// 使用者必須明確按數字鍵選 Options 之一，或以 Esc / Ctrl-C 取消（回 CancelApprovalID）。
 type EvApprovalRequest struct {
-	ReqID   string
-	TurnID  string
-	Title   string
-	CWD     string
-	Reason  string
-	Options []ApprovalOption
+	ReqID    string
+	TurnID   string
+	Title    string
+	CWD      string
+	Reason   string
+	Options  []ApprovalOption
+	Explicit bool
 }
 
 type EvInputRequest struct {
@@ -251,3 +281,5 @@ func (EvApprovalRequest) isEvent()    {}
 func (EvInputRequest) isEvent()       {}
 func (EvRequestRejected) isEvent()    {}
 func (EvConnectionLost) isEvent()     {}
+func (EvCommandsUpdated) isEvent()    {}
+func (EvModeWarning) isEvent()        {}

@@ -275,6 +275,22 @@ type approvalRequest struct {
 	action    string
 	cwd       string
 	reason    string
+	// options 非 nil 時為 explicit 模式：沒有預設選項，只能用數字鍵選或取消。
+	options []ApprovalOption
+}
+
+func (a *approvalRequest) hint() string {
+	if a.options == nil {
+		return approvalHint(a.available)
+	}
+	parts := make([]string, 0, len(a.options))
+	for index, option := range a.options {
+		if index >= 9 {
+			break
+		}
+		parts = append(parts, fmt.Sprintf("[%d] %s", index+1, option.Label))
+	}
+	return strings.Join(parts, "  ")
 }
 
 type userInputOption struct {
@@ -383,6 +399,8 @@ type ui struct {
 	expandedToolGroups    map[string]bool
 	replyTarget           screenTurnTarget
 	usage                 threadUsage
+	permissionNote        string         // backend 回報的非 default permission mode 警示（status bar 持續顯示）
+	agentCommands         []SlashCommand // backend 動態宣告的 slash commands
 	scrollOffset          int
 	recap                 turnRecap
 	hoverText             string
@@ -1114,6 +1132,14 @@ func (u *ui) handleEvent(event Event) {
 			u.usage.modelContextWindow = *event.Size
 			u.usage.hasContextWindow = true
 		}
+	case EvModeWarning:
+		changed := u.permissionNote != event.Text
+		u.permissionNote = event.Text
+		if changed && event.Text != "" && !u.screenMode {
+			u.printStatus(event.Text, yellow)
+		}
+	case EvCommandsUpdated:
+		u.agentCommands = event.Commands
 	case EvTurnCompleted:
 		u.finishTurn(event.Label)
 	case EvNotice:
@@ -1177,15 +1203,23 @@ func (u *ui) presentApproval(event EvApprovalRequest) {
 	for _, option := range event.Options {
 		available = append(available, option.ID)
 	}
-	u.showApproval(event.ReqID, event.Title, valueOr(event.CWD, u.cwd), event.Reason, available)
+	var options []ApprovalOption
+	if event.Explicit {
+		options = append(make([]ApprovalOption, 0, len(event.Options)), event.Options...)
+	}
+	u.showApprovalRequest(event.ReqID, event.Title, valueOr(event.CWD, u.cwd), event.Reason, available, options)
 }
 
 func (u *ui) showApproval(reqID, action, cwd, reason string, available []string) {
+	u.showApprovalRequest(reqID, action, cwd, reason, available, nil)
+}
+
+func (u *ui) showApprovalRequest(reqID, action, cwd, reason string, available []string, options []ApprovalOption) {
 	u.toolGroupBoundary++
 	u.clearPrompt()
 	u.dashboard = false
 	u.dashboardError = ""
-	u.approval = &approvalRequest{id: reqID, available: available, action: action, cwd: cwd, reason: reason}
+	u.approval = &approvalRequest{id: reqID, available: available, action: action, cwd: cwd, reason: reason, options: options}
 	if u.screenMode {
 		return
 	}
@@ -1195,7 +1229,7 @@ func (u *ui) showApproval(reqID, action, cwd, reason string, available []string)
 	if reason != "" {
 		fmt.Fprintf(u.out, "%s  reason%s   %s\n", muted, reset, sanitizeText(reason))
 	}
-	fmt.Fprintf(u.out, "%s  %s%s\n", cyan, approvalHint(available), reset)
+	fmt.Fprintf(u.out, "%s  %s%s\n", cyan, u.approval.hint(), reset)
 }
 
 func (u *ui) presentInputRequest(event EvInputRequest) {
@@ -1222,7 +1256,44 @@ func (u *ui) presentInputRequest(event EvInputRequest) {
 	u.renderPrompt()
 }
 
+// handleExplicitApprovalKey 處理沒有預設選項的 approval（ACP）：Enter 不做決定。
+func (u *ui) handleExplicitApprovalKey(key keyEvent) error {
+	approval := u.approval
+	optionID, label := "", ""
+	switch key.typ {
+	case keyCtrlC, keyEscape:
+		optionID, label = CancelApprovalID, "cancelled"
+	case keyRune:
+		if key.rune >= '1' && key.rune <= '9' {
+			if index := int(key.rune - '1'); index < len(approval.options) {
+				optionID, label = approval.options[index].ID, approval.options[index].Label
+			}
+		}
+	}
+	if optionID == "" {
+		return nil
+	}
+	u.approval = nil
+	backend := u.backend
+	if backend == nil {
+		return errors.New("backend unavailable")
+	}
+	if err := backend.ResolveApproval(approval.id, optionID); err != nil {
+		return err
+	}
+	if u.screenMode {
+		u.screenAdd(screenStatus, label)
+		return nil
+	}
+	fmt.Fprintf(u.out, "%s  %s%s\n", statusColor(label), sanitizeText(label), reset)
+	u.renderBusy()
+	return nil
+}
+
 func (u *ui) handleApprovalKey(key keyEvent) error {
+	if u.approval.options != nil {
+		return u.handleExplicitApprovalKey(key)
+	}
 	decision := ""
 	switch key.typ {
 	case keyCtrlC, keyEscape:

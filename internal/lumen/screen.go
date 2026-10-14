@@ -678,7 +678,7 @@ func (u *ui) screenComposerLines(width int) []string {
 		if u.approval.reason != "" {
 			details = append(details, "reason: "+u.approval.reason)
 		}
-		details = append(details, approvalHint(u.approval.available))
+		details = append(details, u.approval.hint())
 		for _, detail := range details {
 			for index, line := range wrapDisplay(detail, contentWidth-2) {
 				prefix := "  "
@@ -774,6 +774,9 @@ func (u *ui) screenStatusLabel() string {
 	} else {
 		label = fmt.Sprintf("%s (%s) · %s", u.effectiveModel(), u.effectiveEffort(), u.effectiveApproval())
 	}
+	if u.permissionNote != "" {
+		label += " · " + u.permissionNote
+	}
 	return statusBarBrand + " · " + label
 }
 
@@ -794,7 +797,7 @@ func (u *ui) screenDockLine(width int) string {
 		footer = "Ctrl+O collapse tool use  ·  Ctrl+X shortcuts"
 	}
 	if u.approval != nil {
-		footer = approvalHint(u.approval.available) + "  ·  Esc cancel"
+		footer = u.approval.hint() + "  ·  Esc cancel"
 	}
 	if u.inputRequest != nil {
 		footer = "↑↓ select  ·  Enter submit  ·  Ctrl-C interrupt  ·  Esc cancel"
