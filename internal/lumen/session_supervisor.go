@@ -1,6 +1,7 @@
 package lumen
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"sync"
@@ -114,23 +115,26 @@ func reconnectWithSnapshot(factory func() (*appServer, error), snapshot reconnec
 	if err == nil && client == nil {
 		err = errors.New("reconnect factory returned nil app-server")
 	}
+	// 重連流程只透過 Backend interface：Open -> ResumeSession -> （必要時）NewSession。
+	var backend Backend
 	if err == nil {
-		err = reconnectCall(done, client.Initialize)
+		backend = newCodexBackend(client, snapshot.threadID)
+		err = reconnectCall(done, func() error { return backend.Open(context.Background()) })
 	}
 	var thread threadSummary
 	if err == nil {
 		if snapshot.threadID != "" {
-			thread, err = reconnectCallWithThread(done, client, func() (threadSummary, error) {
-				return client.ResumeThread(snapshot.threadID, snapshot.overrides)
+			thread, err = reconnectCallWithThread(done, backend, func() (threadSummary, error) {
+				return backend.ResumeSession(snapshot.threadID, snapshot.cwd, snapshot.overrides)
 			})
 			if canStartFreshThreadAfterResume(err, snapshot.hasTranscriptContent) {
-				thread, err = reconnectCallWithThread(done, client, func() (threadSummary, error) {
-					return client.StartThread(snapshot.cwd, snapshot.overrides)
+				thread, err = reconnectCallWithThread(done, backend, func() (threadSummary, error) {
+					return backend.NewSession(snapshot.cwd, snapshot.overrides)
 				})
 			}
 		} else {
-			thread, err = reconnectCallWithThread(done, client, func() (threadSummary, error) {
-				return client.StartThread(snapshot.cwd, snapshot.overrides)
+			thread, err = reconnectCallWithThread(done, backend, func() (threadSummary, error) {
+				return backend.NewSession(snapshot.cwd, snapshot.overrides)
 			})
 		}
 	}
@@ -169,7 +173,7 @@ func reconnectCall(done <-chan struct{}, call func() error) error {
 	}
 }
 
-func reconnectCallWithThread(done <-chan struct{}, client *appServer, call func() (threadSummary, error)) (threadSummary, error) {
+func reconnectCallWithThread(done <-chan struct{}, backend Backend, call func() (threadSummary, error)) (threadSummary, error) {
 	results := make(chan struct {
 		thread threadSummary
 		err    error
@@ -193,7 +197,7 @@ func reconnectCallWithThread(done <-chan struct{}, client *appServer, call func(
 	case result := <-results:
 		return result.thread, result.err
 	case <-done:
-		client.Close()
+		backend.Close()
 		return threadSummary{}, errReconnectCancelled
 	}
 }
