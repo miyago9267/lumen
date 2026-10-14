@@ -222,6 +222,14 @@ func (u *ui) backendLabel() string {
 	return u.backend.Name()
 }
 
+// sessionStartLabel 是 session_start 事件列；codex 維持 [app-server]，其他 backend 顯示其名稱。
+func (u *ui) sessionStartLabel() string {
+	if u.backend == nil || u.backend.Name() == "codex" {
+		return "session_start  [app-server]"
+	}
+	return "session_start  [" + u.backend.Name() + "]"
+}
+
 func (u *ui) screenDashboardRows(width int) []screenTranscriptRow {
 	rows := []screenTranscriptRow{{
 		rendered: screenStyledLine(screenInfo, "dashboard  ·  session supervisor  ·  all sessions", width),

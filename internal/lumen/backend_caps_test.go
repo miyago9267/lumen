@@ -253,3 +253,16 @@ func TestForkButtonHiddenWhileReconnectingOnACP(t *testing.T) {
 		t.Fatalf("[fork] lost for codex while reconnecting: %q", plain)
 	}
 }
+
+// session_start 事件列顯示目前 backend 名稱；codex 維持 [app-server]。
+func TestSessionStartLabelFollowsBackend(t *testing.T) {
+	for name, want := range map[string]string{"claude": "session_start  [claude]", "codex": "session_start  [app-server]"} {
+		frontend := &ui{backend: acpLikeBackend(name, Capabilities{})}
+		if got := frontend.sessionStartLabel(); got != want {
+			t.Fatalf("%s label = %q, want %q", name, got, want)
+		}
+	}
+	if got := (&ui{}).sessionStartLabel(); got != "session_start  [app-server]" {
+		t.Fatalf("nil backend label = %q", got)
+	}
+}

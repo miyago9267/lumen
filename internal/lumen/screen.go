@@ -68,7 +68,7 @@ func (u *ui) runFullscreen(initialPrompt string) error {
 	u.showWelcome = initialPrompt == "" && len(u.thread.Turns) == 0
 	u.branch = gitBranch(u.cwd)
 
-	u.screenAdd(screenEvent, "session_start  [app-server]")
+	u.screenAdd(screenEvent, u.sessionStartLabel())
 	u.renderHistory()
 	keyEvents := make(chan keyEvent, 8)
 	go readKeys(u.in, keyEvents)
