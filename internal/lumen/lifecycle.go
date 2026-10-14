@@ -177,7 +177,7 @@ func canStartFreshThreadAfterResume(err error, hasTranscriptContent bool) bool {
 	if err == nil || hasTranscriptContent {
 		return false
 	}
-	return strings.Contains(strings.ToLower(err.Error()), "no rollout found")
+	return errors.Is(err, errSessionNotFound) || strings.Contains(strings.ToLower(err.Error()), "no rollout found")
 }
 
 func (u *ui) markConnectionLost(err error) {

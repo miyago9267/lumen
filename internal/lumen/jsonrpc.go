@@ -26,6 +26,17 @@ type rpcMessage struct {
 	Error  *rpcError       `json:"error"`
 }
 
+// rpcCallError 是對端以 JSON-RPC error 回覆的 Call 失敗；Error() 文字與先前一致。
+type rpcCallError struct {
+	Method  string
+	Code    int
+	Message string
+}
+
+func (e *rpcCallError) Error() string {
+	return fmt.Sprintf("%s (%d): %s", e.Method, e.Code, e.Message)
+}
+
 type pendingCall struct {
 	result chan rpcMessage
 }
@@ -256,7 +267,7 @@ func (c *rpcConn) call(ctx context.Context, timeout time.Duration, method string
 	select {
 	case message := <-result:
 		if message.Error != nil {
-			return fmt.Errorf("%s (%d): %s", method, message.Error.Code, message.Error.Message)
+			return &rpcCallError{Method: method, Code: message.Error.Code, Message: message.Error.Message}
 		}
 		if target == nil || len(message.Result) == 0 || string(message.Result) == "null" {
 			return nil

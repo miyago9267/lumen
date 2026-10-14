@@ -1,6 +1,12 @@
 package lumen
 
-import "context"
+import (
+	"context"
+	"errors"
+)
+
+// errSessionNotFound 表示 backend 找不到要接回的 session；reconnect 在 transcript 為空時可改開新 session。
+var errSessionNotFound = errors.New("session not found")
 
 // Backend 是 UI 唯一依賴的 seam。Events() 合併 backend 所有的 notification、
 // server request、error 與 closed 訊號，UI event loop 只 select 這一個 channel。
