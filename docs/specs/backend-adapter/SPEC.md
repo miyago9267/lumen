@@ -16,8 +16,8 @@ depends_on: [spec-lumen]
 <!-- markdownlint-enable MD025 -->
 
 > 狀態：approved（Miyago，2026-10-14）。已接受 ADR-4 自寫 ACP client、JSON config、預設改 Claude。
-> 研究驗證日：2026-10-14。標 `unverified` 的項目是 P2 spike 要實測的假設，
-> 不是事實。
+> 研究驗證日：2026-10-14。T2.0 spike 已完成（`claude-agent-acp@0.90.0`，2026-10-14），結果已折回本文；
+> 仍標 `unverified` 的項目是 spike 未能驗證的假設，不是事實（見文末 Open questions）。
 
 ## Goal
 
@@ -93,8 +93,8 @@ backend」：
   `session/new{cwd, mcpServers}` -> `sessionId`；`session/load{sessionId, cwd, mcpServers}`
   會把歷史用 `session/update` 重播後回空結果；`session/resume`（需
   `sessionCapabilities.resume`）不重播歷史；`session/close`（需
-  `sessionCapabilities.close`）。`cwd` 必須是絕對路徑。`mcpServers` 欄位必填（可為空陣列，
-  `unverified`：是否允許省略）。
+  `sessionCapabilities.close`）。`cwd` 必須是絕對路徑。`mcpServers` 欄位必填（Lumen 一律送空陣列；
+  `claude-agent-acp@0.90.0` 實測接受空陣列，是否允許省略 `unverified`、Lumen 不省略）。
 - `session/list{cwd?, cursor?}` -> `sessions[{sessionId, cwd, title?, updatedAt?}]`、
   `nextCursor?`；需 `agentCapabilities.sessionCapabilities.list`，沒有就不得呼叫。
   來源：<https://agentclientprotocol.com/protocol/session-list>
@@ -141,7 +141,7 @@ backend」：
 
 | Backend | 套件 / 指令 | 驗證 |
 | --- | --- | --- |
-| Claude Code | npm `@agentclientprotocol/claude-agent-acp`，`bin: claude-agent-acp`；`npm view` 於 2026-10-14：`latest = 0.90.0`、`preview = 0.90.1-preview.1`，repo `agentclientprotocol/claude-agent-acp`，Apache-2.0。舊名 `@zed-industries/claude-agent-acp` 最新 `0.23.1`，已標 deprecated（「renamed to @agentclientprotocol/claude-agent-acp」）。Lumen 預設啟動方式是 `exec.LookPath("claude-agent-acp")` 找全域安裝的 bin（見 Security disposition S-1），不用 `npx`；README 未寫 launch 指令，實際啟動行為 `unverified`（P2 spike 實跑）。來源：<https://github.com/agentclientprotocol/claude-agent-acp>、`npm view`（本機） | 套件名、bin、版本 verified；啟動與 auth 流程 unverified |
+| Claude Code | npm `@agentclientprotocol/claude-agent-acp`，`bin: claude-agent-acp`；`npm view` 於 2026-10-14：`latest = 0.90.0`、`preview = 0.90.1-preview.1`，repo `agentclientprotocol/claude-agent-acp`，Apache-2.0。舊名 `@zed-industries/claude-agent-acp` 最新 `0.23.1`，已標 deprecated（「renamed to @agentclientprotocol/claude-agent-acp」）。Lumen 預設啟動方式是 `exec.LookPath("claude-agent-acp")` 找全域安裝的 bin（見 Security disposition S-1），不用 `npx`；README 未寫 launch 指令，spike 實測：argv 只有 bin 路徑，不需任何旗標。來源：<https://github.com/agentclientprotocol/claude-agent-acp>、`npm view`（本機） | 套件名、bin、版本、啟動 verified（T2.0）；`authMethods` 回 `[]`（claude CLI 自行使用 keychain/login） |
 | Gemini CLI | `gemini --acp`；`--experimental-acp` 已 deprecated（本機 `gemini 0.60.0` 的 `gemini --help` 顯示 `--acp  Starts the agent in ACP mode`、`--experimental-acp ... (deprecated, use --acp instead)`）。來源：<https://github.com/google-gemini/gemini-cli/blob/main/docs/cli/acp-mode.md>；列出 `initialize/authenticate/newSession/loadSession/prompt/cancel`、`setSessionMode`、`unstable_setSessionModel` | verified（文件 + 本機 help） |
 | Codex | 不走 ACP；沿用 `codex app-server`（`app.go:220` `startAppServer`、`app.go:243` `appServerArgs`） | verified（現況） |
 
@@ -151,9 +151,12 @@ schema 版本、是否涵蓋 `session/list` / `session/resume` 在 repo 頁面�
 
 claude-agent-acp README 聲明支援：tool call + permission request、slash commands、client MCP
 servers、`/mcp`、TODO list、nested subagent transcript、terminal；v2 surface 提到
-`session/list`、`session/resume`、elicitation（URL elicitation 用於 MCP OAuth）。**v1 default
-surface 是否有 `session/list`/`resume`/`loadSession` 未驗證**，P2 spike 以實際 `initialize` response 為準。
-README 未提 `AskUserQuestion`，Claude 的互動式提問如何映射到 ACP `unverified`。
+`session/list`、`session/resume`、elicitation（URL elicitation 用於 MCP OAuth）。**T2.0 實測（0.90.0）：** `initialize` 回 `loadSession:true`；
+`sessionCapabilities{list,resume,fork,close,delete,additionalDirectories}`；`promptCapabilities{image,embeddedContext}`；
+`mcp{http,sse}`；`authMethods []`。`session/list` 回 `{sessions:[{sessionId,cwd,title,updatedAt}]}`，無 `nextCursor`
+（仍依 `nextCursor` 分頁處理）；`session/load` 先以 `session/update` 重播歷史再回結果，`session/resume` 不重播。
+`AskUserQuestion`：`clientCapabilities {}` 時被 adapter disallow；只有 client 宣告 `elicitation.form` 才以
+`elicitation/create` 呈現（見 ADR-5、Open questions #3）。
 
 ## ADR
 
@@ -198,7 +201,7 @@ README 未提 `AskUserQuestion`，Claude 的互動式提問如何映射到 ACP `
   `clientInfo = {name:"lumen", title:"Lumen", version: appVersion}`。
 - **Reason：**
   1. Claude Agent SDK 與 Gemini CLI 都自帶檔案與 shell 執行；沒有 client fs/terminal 它們用自己的
-     （`unverified`：需 P2 spike 確認 adapter 在省略 capability 時不報錯、仍能編輯檔案）。
+     （T2.0 已驗證：`clientCapabilities {}` 時 adapter 不報錯，仍能自行編輯檔案；`request_permission` 的 JSON-RPC `id` 為數字 `0`）。
   2. 實作 `fs/write_text_file` 或 `terminal/*` 等於 Lumen 要承擔 sandbox、路徑驗證與 process 管理，
      這是 safety 面的新增，不是 minimal。
   3. 少一個 inbound request 類別，UI 的 approval 路徑只剩 `session/request_permission`。
@@ -206,8 +209,8 @@ README 未提 `AskUserQuestion`，Claude 的互動式提問如何映射到 ACP `
   （唯讀、限制在 session cwd 下的絕對路徑），再考慮 `writeTextFile`，`terminal` 最後。
 - **不宣告 elicitation 的後果：** agent 無法對 Lumen 發 `elicitation/create`；Codex 的
   `item/tool/requestUserInput` 在 ACP backend 沒有對等路徑，capability `userInput=false`（見下）。
-  若 spike 發現 Claude 的互動提問需要 elicitation，P2.5 再宣告 `elicitation.form`，映射到既有
-  `userInputQuestion` UI。
+  T2.0 確認 Claude 的 `AskUserQuestion` 在未宣告 elicitation 時被 disallow（agent 不會呼叫）；第一個 slice 維持
+  `clientCapabilities {}`，elicitation 為 follow-up（宣告 `elicitation.form`，映射到既有 `userInputQuestion` UI）。
 
 ## Architecture
 
@@ -335,7 +338,7 @@ ID 驗證（原 `validateServerRequest`）下沉到 backend：backend 只送屬�
 | `EvToolOutput` | `item/commandExecution/outputDelta`（`ui.go:1021`） | `tool_call_update.content[]`（`content` text、`terminal` 因未宣告 terminal 不會出現） |
 | `EvToolCompleted` | `item/completed`（`ui.go:1050`；`Label` 由 `codexBackend` 保留 `toolCompletionStatus(status, exitCode)`（如 `failed exit 1`）與 fileChange raw status 的現行字串，`ui.go:1234-1255`） | `tool_call_update.status` = `completed|failed`；cancel 時由 client 自己標 `cancelled` |
 | `EvPlanUpdated` | `turn/plan/updated`（`ui.go:1052`） | `plan` |
-| `EvSessionTitle` | `thread/name/updated`（`ui.go:1077`） | `session_info_update`（`title`，欄位名 `unverified`） |
+| `EvSessionTitle` | `thread/name/updated`（`ui.go:1077`） | `session_info_update`（`title`、`updatedAt`；T2.0 實測欄位名） |
 | `EvUsage` | `thread/tokenUsage/updated`（`ui.go:1085`，含 input/output/cache read/cache creation/context window） | `usage_update{used,size,cost}`；**缺口：** 無 input/output/cache 拆分，`/usage` 與 dock 的 breakdown 欄位省略，只顯示 `used/size` 與（如有）cost |
 | `EvTurnCompleted` | `turn/completed`（`ui.go:1114`，`Label` = codex raw `status`，UI 仍顯示 `"turn "+Label`） | `session/prompt` response 的 `stopReason`：`end_turn`->completed、`cancelled`->interrupted、`refusal`->refused、`max_tokens`/`max_turn_requests`->maxTokens；JSON-RPC error->failed |
 | `EvNotice` | `error`/`warning`/`configWarning`/`guardianWarning`（`ui.go:1124-1131`） | `notice`（需宣告 `session.notices`，P2 不宣告）；stderr 摘要不進 transcript |
@@ -390,8 +393,8 @@ ID 驗證（原 `validateServerRequest`）下沉到 backend：backend 只送屬�
   欄位與所有 `authenticate` params。
 - `authenticate`：agent 在 `initialize` 回非空 `authMethods` 或 `session/new` 回 auth 錯誤時，
   Lumen 顯示「backend X requires login: run `<其登入指令>` in another terminal」並停在
-  disconnected 狀態，不在 TUI 內處理 credential（`auth.terminal` 不宣告）。登入指令來源與 Claude
-  adapter 實際 auth 流程 `unverified`（spike 確認）。
+  disconnected 狀態，不在 TUI 內處理 credential（`auth.terminal` 不宣告）。Claude adapter 實測 `authMethods` 為 `[]`
+  （claude CLI 自行使用 keychain/login）；登入指令來源 `unverified`。
 
 ## Backend 選擇與 `/backend`
 
@@ -474,7 +477,7 @@ notification 的 fixture）；建議 P1 內部再拆：(a) 先引入 `Event` 與
 [claude-agent-acp](https://github.com/agentclientprotocol/claude-agent-acp)、
 [block/buzz#2884](https://github.com/block/buzz/issues/2884)、
 [Claude Agent SDK permissions](https://code.claude.com/docs/en/agent-sdk/permissions)。
-標 `unverified` 的是推論，由 T2.0 spike 實測。
+T2.0 spike 已實測（2026-10-14，`claude-agent-acp@0.90.0`）；仍標 `unverified` 的是 spike 未涵蓋的項目。
 
 ### S-1 Adapter 啟動（Severity M）
 
@@ -484,8 +487,17 @@ notification 的 fixture）；建議 P1 內部再拆：(a) 先引入 `Event` 與
 - ACP subprocess 的 `cmd.Dir` 固定為 Lumen 自有目錄（`${XDG_STATE_HOME:-~/.local/state}/lumen`，不存在時以 0700
   建立），**不是**專案 cwd。專案路徑只透過 `session/new.cwd`（與 `session/load.cwd`）傳遞。
   理由：避免專案目錄內的檔案（`.npmrc`、`node_modules/.bin`、專案層 config）影響 adapter 啟動。
-- Spike 要確認：(a) adapter 是否依賴 process cwd（而非 `session/new.cwd`）；(b) 0.90.0 是否附
-  `npm-shrinkwrap.json`（決定間接依賴是否被鎖）。
+- Spike 結果（T2.0）：
+  - (a) adapter **不依賴** process cwd：`cmd.Dir` 為空目錄、`session/new.cwd` 指專案時，檔案寫入專案、專案 settings
+    被讀取；`process.cwd()` 只用於 auth probe fallback。`session/list` 若不帶 `cwd` 會回傳**所有**專案的 session
+    （實測 244 筆）-> **Lumen 的 `session/list` 一律帶 `cwd`**。
+  - (b) 0.90.0 **沒有** `npm-shrinkwrap.json` 或 lockfile；4 個直接依賴 pin 版，間接依賴未鎖。故維持 pin
+    `@0.90.0` + 全域安裝（不自動下載）。
+- **Subprocess env（決定）：** 啟動 ACP agent 前，Lumen 從繼承的環境移除 `CLAUDE_CODE_EXECUTABLE` 與 `ANTHROPIC_*`
+  （實測 adapter 會把完整 env 傳給 claude CLI child，`CLAUDE_CODE_EXECUTABLE` 可改變實際執行的 binary）。其餘照常
+  繼承（`HOME`/`PATH`/`USER`/`TMPDIR`/`LANG`/`TERM` 等），claude CLI 自己的 keychain/login 認證不受影響。實測 adapter
+  收到的 env key 只有 `PATH,HOME,USER,TMPDIR,LANG,TERM`，argv 只有 bin 路徑，Lumen 不傳任何 bypass flag/env。
+  adapter 本身啟動 claude CLI 時會帶 `--allow-dangerously-skip-permissions`（只是讓 bypass「可被選取」，非啟用）。
 
 ### S-2 `backends.json`（Severity L）
 
@@ -508,13 +520,36 @@ notification 的 fixture）；建議 P1 內部再拆：(a) 先引入 `Event` 與
   `bypassPermissions`，見 buzz#2884。）
 - Lumen **不送**任何會改變 mode/permission 的 request（`session/set_mode`、對 mode/permission 類
   `session/set_config_option`），也不傳 bypass flag 或 env。
-- 風險（官方文件已驗證其機制，adapter 行為 `unverified`）：Agent SDK 預設 `query()` 會讀取專案
+- 風險（機制見官方文件，T2.0 已對 adapter 實測，結果見下）：Agent SDK 預設 `query()` 會讀取專案
   `.claude/settings.json` 的 allow/deny/ask rules 與 `permissions.defaultMode`，session 起始 mode 可能是
   `auto`（[permissions 文件](https://code.claude.com/docs/en/agent-sdk/permissions)）；若 `claude-agent-acp@0.90.0`
   沿用這些行為，則 user/project settings 可能在 Lumen 不知情下放行工具或啟用 bypass。
 - 緩解：Lumen 讀取 `session/new` 回傳的 mode 與後續 `current_mode_update`；mode 不是 `default` 時，status bar
   **持續**顯示 `permissions: <mode> (from agent settings)`，直到 mode 回到 `default`。
-- Spike 要確認：0.90.0 的 `settingSources` 實際行為、`session/new` 回傳的 mode、省略 permission 相關設定時的預設 mode。
+- Spike 結果（T2.0）：
+  - (c) `settingSources` 在 0.90.0 寫死為 `["user","project","local"]`，可被 `session/new._meta.claudeCode.options`
+    覆寫，但**初始 mode 不受該覆寫影響**。Miyago 的 user settings `defaultMode: auto` -> `session/new` 回 `auto`；
+    project settings：`plan` 生效，`acceptEdits`/`bypassPermissions` 退回 `default`；settings.local：`acceptEdits` 生效，
+    `bypassPermissions` 退回 `default`（原因未明）。project `allow:["Write"]` **沒有**跳過 `request_permission`。
+    `unverified`：user-level allow rules 是否跳過 prompt。
+  - (d) mode 讀取：`result.modes.currentModeId`，或 `result.configOptions[id=mode].currentValue`。`availableModes` =
+    `default, acceptEdits, plan, auto, bypassPermissions`。`current_mode_update` 在 runtime 未觀察到（僅見 adapter 原始碼
+    `session-mode.js:170`），Lumen 仍須處理。
+  - (e) Lumen client 只送：`initialize`、`session/new`、`session/prompt`、`session/list`、`session/load`、`session/resume`、
+    `session/cancel`；不送 `session/set_mode`、`session/set_config_option`、`authenticate`。
+- **決定（限縮 bypass）：** 對 claude backend，Lumen 在 `session/new`（及 `load`/`resume`）送
+  `_meta.claudeCode.options.allowDangerouslySkipPermissions:false`。這只是限制（把 `bypassPermissions` 從
+  `availableModes` 移除），**不是**要求變更 mode；不違反「不送 mode-changing request」。
+- **決定（mode 警示）：** status bar 警示讀取 `session/new` 的 `result.modes.currentModeId`，或
+  `configOptions[id=mode].currentValue`，並處理 `current_mode_update`；非 `default` 時持續顯示
+  `permissions: <mode> (from agent settings)`。
+- **決定（JSON-RPC id）：** JSON-RPC 層必須接受數值 `id: 0` 的 server request（`request_permission` 實測 id 為 `0`），
+  不可把 0 當成「無 id」。
+- **決定（AskUserQuestion）：** 第一個 slice 送 `clientCapabilities {}`，使 `AskUserQuestion` 被 adapter disallow；
+  elicitation 為 follow-up，不在 P2。
+- 實測 permission 行為：`request_permission` options = `allow-once (allow_once)`、`allow-with-updates (allow_always)`、
+  `reject (reject_once)`。回 `cancelled` -> tool failed、turn 繼續並以 `end_turn` 結束；`allow-once` -> 檔案寫入。
+  `session/cancel` -> `stopReason: cancelled` 約 8 ms，cancel 後仍會到數個 chunk。
 
 ## Risks
 
@@ -536,14 +571,17 @@ notification 的 fixture）；建議 P1 內部再拆：(a) 先引入 `Event` 與
    wrapper。
 2. （已由 security review 決定）預設 command 為全域安裝的 `claude-agent-acp`，`npx` 只能明確 opt-in；見
    Security disposition S-1。
-3. Claude 的互動式提問（Codex 的 `requestUserInput` 對等物）在 ACP 怎麼出現（permission request 的
-   options？`elicitation/create`？）`unverified`；決定 P2 是否要宣告 `elicitation.form`。
+3. （T2.0 已回答）Claude 的互動式提問以 `elicitation/create` 呈現，且只在 client 宣告 `elicitation.form` 時；P2 不宣告，
+   `AskUserQuestion` 被 disallow；elicitation 為 follow-up。live elicitation 行為 `unverified`。
 4. `/backend` 切換時是否要自動把舊 transcript 摘要當第一個 prompt 帶給新 backend？本 spec 預設「不帶」。
 5. 非 codex backend 的 `--model` 等旗標要不要在 P3 就支援（經 `session/set_config_option`）？本 spec 預設
    「報錯」。
-6. Gemini 的 ACP 認證流程與 `gemini --acp` 的實際 capability（`loadSession` 等）`unverified`。
+6. Gemini 的 ACP 認證流程與 `gemini --acp` 的實際 capability `unverified`：spike 時 gemini 0.60.0 因 `IneligibleTierError`
+   （無 API key）60 秒內未回應 `initialize`；原始碼顯示 `loadSession`、image/audio/embeddedContext、4 種 auth methods。
 7. config 檔格式 JSON 是否可接受（避免新依賴）？若偏好 TOML 需評估新增依賴。
-8. `claude-agent-acp@0.90.0` 實際的 settings/permission 行為（S-3）與是否附 `npm-shrinkwrap.json`（S-1）`unverified`，由 T2.0 回答。
+8. （T2.0 已回答大部分，見 S-1/S-3）仍 `unverified`：user-level allow rules 是否跳過 prompt；project `allow:["Write"]` 為何沒跳過；
+   settings.local `bypassPermissions` 退回 `default` 的原因；`current_mode_update` 的 runtime 行為；live elicitation；
+   gemini runtime；pending permission 時 `session/cancel` 的行為。
 
 ## Files（預計變更，P1–P4）
 

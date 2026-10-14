@@ -43,7 +43,7 @@ spec: spec-lumen-backend-adapter
 
 ## P2：acpBackend MVP — 3.5–5 天
 
-- [ ] T2.0 Spike（0.5–0.75 天）：用一次性腳本實跑全域安裝的 `claude-agent-acp@0.90.0`（`npm i -g` 到隔離 prefix，不用 `npx`）與
+- [x] T2.0 Spike（0.5–0.75 天）：用一次性腳本實跑全域安裝的 `claude-agent-acp@0.90.0`（`npm i -g` 到隔離 prefix，不用 `npx`）與
   `gemini --acp`，只送 `initialize{protocolVersion:1, clientCapabilities:{}}` 與 `session/new`，記錄
   `agentCapabilities`、`authMethods`、省略 fs/terminal 時是否可編輯檔案、`AskUserQuestion` 的呈現、
   `session_info_update` 欄位名、adapter 預設 permission 行為（預設 mode、是否自動放行），並確認 Lumen 不傳任何
