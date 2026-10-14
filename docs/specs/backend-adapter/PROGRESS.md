@@ -138,3 +138,21 @@ T-P3-11（M）以假 `codex`（`LUMEN_CODEX_BIN`）確認 `LUMEN_BACKEND=codex` 
 - codex 專屬旗標（`--model` 等）搭配其他 backend 會 exit 2。
 
 未完成：T1.8、T2.8 的真實 codex / claude adapter 手動 smoke。
+
+## 真實 adapter smoke 後修正（2026-10-14）
+
+驗證：`go test -race -count=1 ./...`、`go vet ./...`、`gofmt -l .` 皆乾淨；每項修正先寫失敗測試。
+
+1. reconnect 重複 transcript（T-P2-12）：根因是 `adoptReconnected` 無條件把 `thread.Turns` 重播進 transcript，
+   ACP `session/load` 的 replay turn 沒有 turn id，`screenReplayAddForTurn` 的 turn id 合併對不上，所以整段 history
+   被當成新 turn 寫入（codex 有 turn id，仍走原本的依 id 合併）。修正：transcript 已有內容時略過沒有 turn id 的
+   replay turn 並保留原 `Turns`；ACP 新增 `ReconnectSession`（supervisor 在已有 transcript 時優先呼叫），
+   有 `session/resume` 就用 resume（不重播），只有 `session/load` 時照常 load 但丟棄 replay。沒有 transcript 的
+   重連（例如 `--resume` 後立即斷線）仍用 load 取回 history。fakeacp 原本就是先送 update 再回 result，與真實 adapter 一致。
+2. `[fork]`：重連中（backend nil）改用 `markConnectionLost` 記下的最後已知 capability；從未知到過則隱藏
+   （修正偏差 7 的「沿用 codex 行為」）。
+3. `session_start` 事件列顯示目前 backend 名稱（codex 維持 `[app-server]`）。
+4. turn 失敗原因：codex `error` notification 實為 `{error:{message}, willRetry}`（由 `codex app-server
+   generate-json-schema` 確認），舊解析讀頂層 `message` 得到空字串，原因因此遺失；`turn/completed` 的 `turn.error`
+   也未讀取。main 同樣有此問題，屬既有缺陷的改善。現在兩者都解析：`willRetry` 以 warning 顯示，turn 失敗的
+   `EvTurnCompleted.Err`（codex 與 ACP）由 UI 顯示為 error 列，同一則訊息已由 notice 顯示時不重複。
