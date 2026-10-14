@@ -55,7 +55,7 @@ spec: spec-lumen-backend-adapter
   (d) `session/new` 回傳的 mode 與 `current_mode_update` 行為，以及 mode 不是 `default` 時 status bar 警示要用的欄位；
   (e) 確認 Lumen 不送 `session/set_mode` 或 permission 類 `set_config_option`。
   結果寫回 `SPEC.md` 把 `unverified` 改成事實。腳本放 scratchpad，不進 repo
-- [ ] T2.1 `jsonrpc.go`：從 `appServer` 抽出 line-delimited JSON-RPC 2.0 conn（request/response、
+- [x] T2.1 `jsonrpc.go`：從 `appServer` 抽出 line-delimited JSON-RPC 2.0 conn（request/response、
   notification、inbound request、panic-safe read loop、bounded channels）；`appServer` 改用它，行為不變
   （0.75 天）— T-P2-01
 - [ ] T2.2 `backend_acp.go` lifecycle：spawn（`exec.LookPath` 全域 bin；`cmd.Dir` = Lumen 自有 state dir；stderr 進有界 ring buffer，僅 `EvConnectionLost` 時顯示最後 N 行；找不到 bin 時顯示安裝指令並 disconnected）、`initialize`（`protocolVersion:1`、`clientCapabilities:{}`、

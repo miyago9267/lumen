@@ -11,8 +11,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"sync"
-	"time"
 
 	"golang.org/x/term"
 )
@@ -260,122 +258,16 @@ func appServerArgs() []string {
 	}
 }
 
-type rpcError struct {
-	Code    int    `json:"code"`
-	Message string `json:"message"`
-}
-
-type rpcMessage struct {
-	ID     json.RawMessage `json:"id"`
-	Method string          `json:"method"`
-	Params json.RawMessage `json:"params"`
-	Result json.RawMessage `json:"result"`
-	Error  *rpcError       `json:"error"`
-}
-
-type pendingCall struct {
-	result chan rpcMessage
-}
-
-type serverRequest struct {
-	id     json.RawMessage
-	method string
-	params json.RawMessage
-}
-
+// appServer 是 codex app-server 的 JSON-RPC 連線；傳輸細節在共用的 rpcConn。
 type appServer struct {
-	stdin  io.WriteCloser
-	stdout io.ReadCloser
-	cmd    *exec.Cmd
-
-	writeMu sync.Mutex
-	mu      sync.Mutex
-	nextID  int64
-	pending map[string]pendingCall
-
-	notifications chan rpcMessage
-	requests      chan serverRequest
-	errors        chan error
-	closed        chan struct{}
-	closeOnce     sync.Once
-	failure       error
+	rpcConn
+	cmd *exec.Cmd
 }
 
 func newAppServer(stdin io.WriteCloser, stdout io.ReadCloser, cmd *exec.Cmd) *appServer {
-	return &appServer{
-		stdin:         stdin,
-		stdout:        stdout,
-		cmd:           cmd,
-		nextID:        1,
-		pending:       make(map[string]pendingCall),
-		notifications: make(chan rpcMessage, 256),
-		requests:      make(chan serverRequest, 64),
-		errors:        make(chan error, 1),
-		closed:        make(chan struct{}),
-	}
-}
-
-func (c *appServer) readLoop() {
-	decoder := json.NewDecoder(c.stdout)
-	for {
-		var message rpcMessage
-		if err := decoder.Decode(&message); err != nil {
-			if !errors.Is(err, io.EOF) {
-				c.closeWithError(fmt.Errorf("read app-server: %w", err))
-			} else {
-				c.closeWithError(nil)
-			}
-			return
-		}
-
-		if len(message.ID) > 0 && (len(message.Result) > 0 || message.Error != nil) {
-			key := string(message.ID)
-			c.mu.Lock()
-			call, ok := c.pending[key]
-			if ok {
-				delete(c.pending, key)
-			}
-			c.mu.Unlock()
-			if ok {
-				call.result <- message
-			}
-			continue
-		}
-		if len(message.ID) > 0 && message.Method != "" {
-			select {
-			case c.requests <- serverRequest{message.ID, message.Method, message.Params}:
-			case <-c.closed:
-				return
-			}
-			continue
-		}
-		select {
-		case c.notifications <- message:
-		case <-c.closed:
-			return
-		}
-	}
-}
-
-func (c *appServer) closeWithError(err error) {
-	if err != nil {
-		c.mu.Lock()
-		if c.failure == nil {
-			c.failure = err
-		}
-		c.mu.Unlock()
-		select {
-		case c.errors <- err:
-		default:
-		}
-	}
-	c.closeOnce.Do(func() { close(c.closed) })
-}
-
-func (c *appServer) failureError() error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.failure
+	client := &appServer{cmd: cmd}
+	client.rpcConn.init("app-server", stdin, stdout)
+	return client
 }
 
 func (c *appServer) Initialize() error {
@@ -751,112 +643,8 @@ func (c *appServer) Interrupt(threadID, turnID string) error {
 	}, nil)
 }
 
-func (c *appServer) Call(method string, params any, target any) error {
-	c.mu.Lock()
-	id := c.nextID
-	c.nextID++
-	rawID := json.RawMessage(fmt.Sprintf("%d", id))
-	result := make(chan rpcMessage, 1)
-	c.pending[string(rawID)] = pendingCall{result: result}
-	c.mu.Unlock()
-	defer func() {
-		c.mu.Lock()
-		delete(c.pending, string(rawID))
-		c.mu.Unlock()
-	}()
-
-	if err := c.writeMessage(map[string]any{
-		"method": method,
-		"id":     id,
-		"params": params,
-	}); err != nil {
-		return err
-	}
-
-	select {
-	case message := <-result:
-		if message.Error != nil {
-			return fmt.Errorf("%s (%d): %s", method, message.Error.Code, message.Error.Message)
-		}
-		if target == nil || len(message.Result) == 0 {
-			return nil
-		}
-		if err := json.Unmarshal(message.Result, target); err != nil {
-			return fmt.Errorf("decode %s response: %w", method, err)
-		}
-		return nil
-	case err := <-c.errors:
-		return err
-	case <-c.closed:
-		if err := c.failureError(); err != nil {
-			return err
-		}
-		return fmt.Errorf("app-server closed before %s completed", method)
-	case <-time.After(30 * time.Second):
-		return fmt.Errorf("timeout waiting for %s", method)
-	}
-}
-
-func (c *appServer) notify(method string, params any) error {
-	return c.writeMessage(map[string]any{"method": method, "params": params})
-}
-
-func (c *appServer) respond(id json.RawMessage, result any) error {
-	var raw json.RawMessage
-	if result != nil {
-		encoded, err := json.Marshal(result)
-		if err != nil {
-			return err
-		}
-		raw = encoded
-	} else {
-		raw = json.RawMessage(`{}`)
-	}
-	return c.writeMessage(map[string]any{
-		"id":     id,
-		"result": raw,
-	})
-}
-
-func (c *appServer) respondError(id json.RawMessage, code int, message string) error {
-	return c.writeMessage(map[string]any{
-		"id": id,
-		"error": map[string]any{
-			"code":    code,
-			"message": message,
-		},
-	})
-}
-
-func (c *appServer) writeMessage(message any) error {
-	encoded, err := json.Marshal(message)
-	if err != nil {
-		return err
-	}
-	if c.stdin == nil {
-		return errors.New("app-server stdin unavailable")
-	}
-	c.writeMu.Lock()
-	defer c.writeMu.Unlock()
-	select {
-	case <-c.closed:
-		return errors.New("app-server closed")
-	default:
-	}
-	if _, err := c.stdin.Write(append(encoded, '\n')); err != nil {
-		return fmt.Errorf("write app-server: %w", err)
-	}
-	return nil
-}
-
 func (c *appServer) Close() {
-	c.closeWithError(nil)
-	if c.stdin != nil {
-		_ = c.stdin.Close()
-	}
-	if c.stdout != nil {
-		_ = c.stdout.Close()
-	}
+	c.closeTransport()
 	if c.cmd != nil && c.cmd.Process != nil {
 		_ = c.cmd.Process.Kill()
 	}
