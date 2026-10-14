@@ -17,7 +17,7 @@ spec: spec-lumen-backend-adapter
 | --- | --- | --- |
 | G0 | 完成 | Miyago 核准 SPEC（2026-10-14），ADR-4 自寫 ACP client、JSON config、預設改 Claude 均已接受 |
 | P1 | T1.1-T1.7 完成；T1.8 待手動 smoke | `go test -race ./...`、`go vet ./...`、`gofmt -l .` 皆乾淨 |
-| P2 | 未開始 | |
+| P2 | T2.0-T2.7 完成；T2.8 待真實 adapter 手動 smoke | fake agent 全套 T-P2 綠（T-P2-16 為 M，未跑） |
 | P3 | 未開始 | |
 | P4 | 未開始 | |
 
@@ -53,3 +53,31 @@ spec: spec-lumen-backend-adapter
    無新增 skip，斷言未變。
 10. 原本 UI 內的 `handleNotification` / `handleItemStarted` / `handleItemCompleted` / `handleServerRequest` shim
     移到 `backend_codex_shim_test.go`（codex -> Event -> `handleEvent`），production 不再保留。
+
+## P2 實作（2026-10-14）
+
+驗證：`go test -race -count=1 ./...`、`go vet ./...`、`gofmt -l .` 皆乾淨；ACP 相關測試 `-count=6` 穩定。
+
+偏差與決定：
+
+1. fake agent 放在 `internal/lumen/fakeacp_test.go`（test binary 以 helper process 重新執行自己），不是
+   `testdata/fakeacp/` 的獨立 program；不需要在測試中另外 `go build`。
+2. 抽出的共用 conn 是 `rpcConn`（`jsonrpc.go`），`appServer` 內嵌它；read loop 改成逐行讀取（行長上限 32MB），
+   malformed 行只計數略過（codex 路徑也一樣；原本 decode error 會結束連線）。ACP 的 request / notification 由
+   read loop 依線路順序同步處理（`handle`），因此 `session/load` 的重播 update 一定在 response 前處理完。
+3. `session/load` 的重播不產生 live event，而是收成 `SessionInfo.Turns`（沿用 `historyTurn`），由 UI 既有的
+   replay 去重路徑渲染；reconnect 時不會重複寫入 transcript。
+4. approval 回覆為 ACP schema 的巢狀形式 `{outcome:{outcome:"selected",optionId}}`。使用者取消用保留值
+   `CancelApprovalID`（避免與 agent 自己的 `cancel` option id 衝突，例如 Gemini）。
+5. 新增 `EvApprovalRequest.Explicit`：UI 進入 explicit 模式（數字鍵選 option、Enter 不做決定、Esc/Ctrl-C 取消）。
+   codex 的 approval 路徑不變。新增 `EvModeWarning`（status bar 持續顯示）、`EvCommandsUpdated`、`EvUsage.Cost`。
+6. 找不到 session 時 ACP 回傳 `errSessionNotFound`，`canStartFreshThreadAfterResume` 同時接受它與 codex 的
+   `no rollout found`；transcript 為空才開新 session（與 T-P1-07 一致）。T-P2-12 規格中的「附 notice」尚未做
+   （reconnect 目前只顯示 `reconnected · <id>`）。
+7. `initialize` 的 `authMethods` 非空一律視為需要登入（依 T-P2-13）。Gemini 的 `authenticate` 流程屬 P3 以後。
+8. `claudeACPConfig()` 為內部 constructor（`SessionMeta` 帶 `allowDangerouslySkipPermissions:false`）；未接任何
+   `--backend` / `/backend` / `backends.json`（P3）。
+9. 兩個 P1 follow-up（verifier）：`codexBackend.Prompt` 回傳後立即記錄 turn id（含先紅後綠測試）；T-P1-07 文字修正。
+
+未完成：T2.8 真實 `claude-agent-acp` 手動 smoke（prompt、approval、cancel、kill 後 reconnect）與 T-P2-16
+結果記錄；依指示本輪未跑真實 model prompt。

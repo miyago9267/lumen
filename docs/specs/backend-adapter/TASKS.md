@@ -58,20 +58,20 @@ spec: spec-lumen-backend-adapter
 - [x] T2.1 `jsonrpc.go`：從 `appServer` 抽出 line-delimited JSON-RPC 2.0 conn（request/response、
   notification、inbound request、panic-safe read loop、bounded channels）；`appServer` 改用它，行為不變
   （0.75 天）— T-P2-01
-- [ ] T2.2 `backend_acp.go` lifecycle：spawn（`exec.LookPath` 全域 bin；`cmd.Dir` = Lumen 自有 state dir；stderr 進有界 ring buffer，僅 `EvConnectionLost` 時顯示最後 N 行；找不到 bin 時顯示安裝指令並 disconnected）、`initialize`（`protocolVersion:1`、`clientCapabilities:{}`、
+- [x] T2.2 `backend_acp.go` lifecycle：spawn（`exec.LookPath` 全域 bin；`cmd.Dir` = Lumen 自有 state dir；stderr 進有界 ring buffer，僅 `EvConnectionLost` 時顯示最後 N 行；找不到 bin 時顯示安裝指令並 disconnected）、`initialize`（`protocolVersion:1`、`clientCapabilities:{}`、
   `clientInfo`）、capability 解析、版本不符處理、stderr 擷取（不進 transcript）（0.75 天）— T-P2-02, T-P2-03,
   T-P2-13
-- [ ] T2.3 session：`session/new`、`session/load` / `session/resume`、`session/list`（分頁）、replay 旗標
+- [x] T2.3 session：`session/new`、`session/load` / `session/resume`、`session/list`（分頁）、replay 旗標
   （0.75 天）— T-P2-04, T-P2-05
-- [ ] T2.4 `session/prompt` + `session/update` -> Event 轉譯（message / thought / tool_call /
+- [x] T2.4 `session/prompt` + `session/update` -> Event 轉譯（message / thought / tool_call /
   tool_call_update / plan / usage_update / available_commands_update / session_info_update；unknown 忽略並計數）
   （1 天）— T-P2-06, T-P2-07, T-P2-08, T-P2-14
-- [ ] T2.5 `session/request_permission` <-> `EvApprovalRequest` / `ResolveApproval`（optionId 只取自 `options[]`；non-interactive / timeout / sessionId 不符 / 無法 render -> cancelled；預設 focus 不在 `allow_*`；`session/new` mode 與 `current_mode_update` 非 default 時 status bar 持續警示）；`session/cancel` 流程
+- [x] T2.5 `session/request_permission` <-> `EvApprovalRequest` / `ResolveApproval`（optionId 只取自 `options[]`；non-interactive / timeout / sessionId 不符 / 無法 render -> cancelled；預設 focus 不在 `allow_*`；`session/new` mode 與 `current_mode_update` 非 default 時 status bar 持續警示）；`session/cancel` 流程
   含 pending permission 回 `cancelled`、tool 標 cancelled、cancel timeout notice（0.5 天）— T-P2-09, T-P2-10
-- [ ] T2.6 fake ACP agent fixture：`testdata/fakeacp/`（Go test helper，從 stdin/stdout 講 ACP，腳本化
+- [x] T2.6 fake ACP agent fixture：`testdata/fakeacp/`（Go test helper，從 stdin/stdout 講 ACP，腳本化
   scenario：happy path、permission、cancel、crash、load replay、auth required、unknown update、慢回應）
   （0.75 天，與 T2.2–T2.5 交錯進行）— T-P2-11, T-P2-15
-- [ ] T2.7 acp reconnect：subprocess 結束 -> `EvConnectionLost` -> supervisor 重連 -> load/resume/new
+- [x] T2.7 acp reconnect：subprocess 結束 -> `EvConnectionLost` -> supervisor 重連 -> load/resume/new
   fallback（0.25 天）— T-P2-12
 - [ ] T2.8 P2 驗收：fake agent 全套 EARS 綠；真實 claude adapter 手動 smoke（prompt、approval、cancel、
   crash 後 reconnect）— T-P2-16；若 spike 顯示需要 fs 或 elicitation，開 T2.9（見 SPEC ADR-5）
