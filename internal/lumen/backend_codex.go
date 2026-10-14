@@ -431,8 +431,15 @@ func (b *codexBackend) ListSessions(cwd string, limit int) ([]SessionInfo, error
 	return b.client.ListThreads(cwd, limit)
 }
 
+// Prompt 在 StartTurn 回傳後立刻記下 turn id，使 turn/started 到達前的 server request 也能做 turn 檢查。
 func (b *codexBackend) Prompt(sessionID, text string, rt runtimeOverrides) (string, error) {
-	return b.client.StartTurn(sessionID, text, rt)
+	turnID, err := b.client.StartTurn(sessionID, text, rt)
+	if err == nil && turnID != "" {
+		b.mu.Lock()
+		b.translator.turnID = turnID
+		b.mu.Unlock()
+	}
+	return turnID, err
 }
 
 func (b *codexBackend) Cancel(sessionID, turnID string) error {

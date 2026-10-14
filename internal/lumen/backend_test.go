@@ -362,3 +362,30 @@ func TestReconnectStartsFreshSessionOnlyWithoutTranscript(t *testing.T) {
 		t.Fatalf("resume failure with transcript = %#v", result)
 	}
 }
+
+// StartTurn 回傳 turn id 後、turn/started 到達前，turn id 不符的 server request 仍須被拒絕。
+func TestCodexBackendPromptSetsTurnForRequestValidation(t *testing.T) {
+	reader, writer := io.Pipe()
+	handler := func(method string) (any, string) {
+		if method == "turn/start" {
+			return map[string]any{"turn": map[string]any{"id": "turn-1"}}, ""
+		}
+		return map[string]any{}, ""
+	}
+	client := newAppServer(&scriptedRPCWriter{output: writer, handler: handler}, reader, &exec.Cmd{})
+	go client.readLoop()
+	backend := newCodexBackend(client, "thread-1")
+	t.Cleanup(backend.Close)
+	events := backend.Events()
+
+	if turnID, err := backend.Prompt("thread-1", "hi", runtimeOverrides{}); err != nil || turnID != "turn-1" {
+		t.Fatalf("Prompt() = %q, %v", turnID, err)
+	}
+	if _, err := fmt.Fprintln(writer, `{"id":9,"method":"item/tool/requestUserInput","params":{"threadId":"thread-1","turnId":"turn-old","questions":[{"id":"q","question":"?"}]}}`); err != nil {
+		t.Fatal(err)
+	}
+	rejected, ok := nextEvent(t, events).(EvRequestRejected)
+	if !ok || !strings.Contains(rejected.Message, "turn mismatch") {
+		t.Fatalf("stale turn request before turn/started = %#v", rejected)
+	}
+}
