@@ -1,6 +1,7 @@
 package lumen
 
 import (
+	"errors"
 	"strings"
 	"testing"
 )
@@ -231,5 +232,24 @@ func TestSessionPickersFallBackWithoutCapabilities(t *testing.T) {
 	_ = frontend.attachDashboard(1)
 	if !strings.Contains(frontend.dashboardError, "not supported by backend claude") {
 		t.Fatalf("attach fallback = %q", frontend.dashboardError)
+	}
+}
+
+// T-P3-09：重連中（backend nil）沿用最後已知的 capability；從未知到過就不渲染 [fork]。
+func TestForkButtonHiddenWhileReconnectingOnACP(t *testing.T) {
+	frontend := &ui{screenMode: true, cwd: "/tmp", backend: acpLikeBackend("claude", Capabilities{})}
+	frontend.markConnectionLost(errors.New("killed"))
+	plain, fork := turnCardRows(frontend)
+	if fork || strings.Contains(plain, "[fork]") {
+		t.Fatalf("[fork] rendered while reconnecting on a backend without ForkAtTurn: %q", plain)
+	}
+	unknown := &ui{screenMode: true, cwd: "/tmp"}
+	if plain, fork = turnCardRows(unknown); fork || strings.Contains(plain, "[fork]") {
+		t.Fatalf("[fork] rendered with unknown capabilities: %q", plain)
+	}
+	codex := &ui{screenMode: true, cwd: "/tmp", backend: acpLikeBackend("codex", Capabilities{ForkAtTurn: true})}
+	codex.markConnectionLost(errors.New("killed"))
+	if plain, fork = turnCardRows(codex); !fork || !strings.Contains(plain, "[fork]") {
+		t.Fatalf("[fork] lost for codex while reconnecting: %q", plain)
 	}
 }

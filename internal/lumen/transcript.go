@@ -296,9 +296,13 @@ func screenTurnBlockTooltip(block screenBlock, ordinal int, canFork bool) string
 	return fmt.Sprintf("turn %d · %s · %s", ordinal, screenBlockLabel(block), truncateDisplay(preview, 72))
 }
 
-// canFork 回報目前 backend 是否能從某個 turn 分支；沒有 backend（重連中）時沿用 codex 行為。
+// canFork 回報目前 backend 是否能從某個 turn 分支；沒有 backend（重連中）時用最後已知的 capability，
+// 從未知到過則不顯示。
 func (u *ui) canFork() bool {
-	return u.backend == nil || u.backend.Caps().ForkAtTurn
+	if u.backend == nil {
+		return u.lastCaps.ForkAtTurn
+	}
+	return u.backend.Caps().ForkAtTurn
 }
 
 func screenTurnActionRow(key, id string, ordinal, width int, canFork bool) screenTranscriptRow {

@@ -183,6 +183,9 @@ func canStartFreshThreadAfterResume(err error, hasTranscriptContent bool) bool {
 }
 
 func (u *ui) markConnectionLost(err error) {
+	if u.backend != nil {
+		u.lastCaps = u.backend.Caps()
+	}
 	u.backend = nil
 	u.connectionError = connectionErrorText(err)
 	u.connectionStatusEntry = ""

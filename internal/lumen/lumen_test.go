@@ -1087,7 +1087,7 @@ func TestReconnectAsyncResumesCurrentThread(t *testing.T) {
 }
 
 func TestScreenTurnCardExposesAskAndForkActions(t *testing.T) {
-	frontend := &ui{screenMode: true, cwd: "/tmp/project"}
+	frontend := &ui{screenMode: true, cwd: "/tmp/project", backend: acpLikeBackend("codex", Capabilities{ForkAtTurn: true})}
 	frontend.beginScreenTurn("turn-1")
 	frontend.screenAdd(screenUser, "question")
 	frontend.screenAdd(screenAssistant, "answer")

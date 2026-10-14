@@ -353,6 +353,7 @@ type screenSelection struct {
 
 type ui struct {
 	backend    Backend
+	lastCaps   Capabilities // 連線中斷前最後已知的 backend capability
 	thread     threadSummary
 	cwd        string
 	fullscreen bool
