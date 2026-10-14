@@ -156,3 +156,21 @@ T-P3-11（M）以假 `codex`（`LUMEN_CODEX_BIN`）確認 `LUMEN_BACKEND=codex` 
    generate-json-schema` 確認），舊解析讀頂層 `message` 得到空字串，原因因此遺失；`turn/completed` 的 `turn.error`
    也未讀取。main 同樣有此問題，屬既有缺陷的改善。現在兩者都解析：`willRetry` 以 warning 顯示，turn 失敗的
    `EvTurnCompleted.Err`（codex 與 ACP）由 UI 顯示為 error 列，同一則訊息已由 notice 顯示時不重複。
+
+## Manual smoke 2026-10-15
+
+環境：真實 `claude-agent-acp@0.90.0`，lumen build 自 `8312796`。
+證據：`/private/tmp/claude-501/-Users-miyago-Project-Active-Tools-lumen/10ab9ec2-53ef-4373-9ec1-b43d3de55b64/scratchpad/smoke/evidence/`（session-local，非 durable，不入版控）。
+
+- T-P2-16 PASS（claude adapter）：
+  - approval card 顯示 `$ git push --force origin main` 與 `[1] Yes [2] No`；card 出現後 55ms 內的數字鍵被忽略（400ms guard）。
+  - card pending 時 Ctrl-C：status 為 cancelled、指令未執行、turn completed；超過 400ms 後 allow-once：指令確實執行。
+  - turn 進行中 Ctrl-C：turn 被 interrupt。
+  - `kill -9` adapter：reconnecting -> reconnected，只有 1 個 turn（無 replay 重複），重連期間沒有 `[fork]`，label 維持 `[claude]`。
+  - user defaultMode 為 auto 時顯示 `permissions: auto (from agent settings)`，default mode 時不顯示。
+  - 備註：user settings 有 allow `Bash(*)`/`Write(*)`/`Edit(*)` 時不會出現 card，只有 `ask` 規則會觸發；這是 adapter 預期行為，Lumen 只在非 default mode 顯示 mode warning。
+- T-P3-06 PASS：`/backend` picker 列出 claude / gemini / codex。
+- T-P3-11 PASS（僅 launch/argv）：`codex app-server --listen stdio:// --config suppress_unstable_features_warning=true`，無 bypass flag；`[fork]`、`/goal`、compact 指令有提供。
+- codex 失敗原因已能顯示（真實 400「gpt-6-sol not supported with ChatGPT account」）。
+- T-P1-09 BLOCKED：真實 codex 的 turn/interrupt、fork、`/goal`、compact 執行無法驗證，因 Miyago 的 codex config model `gpt-6-sol` 被 ChatGPT-account auth 拒絕（`codex exec` 同樣錯誤）。需 Miyago 修正 codex model 設定後重跑。
+- Gemini runtime 未驗證（無 auth；IneligibleTierError）。

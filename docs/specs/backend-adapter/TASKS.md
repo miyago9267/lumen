@@ -38,7 +38,7 @@ spec: spec-lumen-backend-adapter
   （0.5 天）— T-P1-07
 - [x] T1.7 **前置條件：** 未修改的 `lumen_test.go` 在 T1.1–T1.6 後 `go test -race ./...` 全綠。之後才允許把測試
   改餵 normalized event 並逐步移除 shim；保留 codex 轉譯 golden test（0.5 天）— T-P1-08
-- [ ] T1.8 P1 驗收：`go test -race ./...`、`go vet ./...`、手動 smoke（一個 prompt、一個 approval、
+- [~] T1.8 P1 驗收（部分：自動檢查已過；真實 codex 的 interrupt/fork/`/goal`/compact 因 codex model 設定被拒而阻塞，見 PROGRESS「Manual smoke 2026-10-15」）：`go test -race ./...`、`go vet ./...`、手動 smoke（一個 prompt、一個 approval、
   interrupt、fork、`/goal`、reconnect）與 P1 前一致 — T-P1-09
 
 ## P2：acpBackend MVP — 3.5–5 天
@@ -73,7 +73,7 @@ spec: spec-lumen-backend-adapter
   （0.75 天，與 T2.2–T2.5 交錯進行）— T-P2-11, T-P2-15
 - [x] T2.7 acp reconnect：subprocess 結束 -> `EvConnectionLost` -> supervisor 重連 -> load/resume/new
   fallback（0.25 天）— T-P2-12
-- [ ] T2.8 P2 驗收：fake agent 全套 EARS 綠；真實 claude adapter 手動 smoke（prompt、approval、cancel、
+- [x] T2.8 P2 驗收：fake agent 全套 EARS 綠；真實 claude adapter 手動 smoke（prompt、approval、cancel、
   crash 後 reconnect）— T-P2-16；若 spike 顯示需要 fs 或 elicitation，開 T2.9（見 SPEC ADR-5）
 
 ## P3：Claude 預設、選擇與切換 — 1.5–2 天
