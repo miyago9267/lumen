@@ -61,7 +61,7 @@ func (u *ui) runFullscreen(initialPrompt string) error {
 			backend.Close()
 		}
 	}()
-	supervisor := newSessionSupervisor(u.serverFactory)
+	supervisor := u.newSupervisor()
 	defer supervisor.Close()
 
 	u.screenMode = true
@@ -699,6 +699,8 @@ func (u *ui) screenComposerLines(width int) []string {
 				lines = append(lines, screenComposerLine(prefix+line, width, screenInfo))
 			}
 		}
+	} else if u.backendPicker {
+		lines = append(lines, screenComposerLine("⌘ switch backend  ·  ↑↓ select  ·  1–9 switch  ·  Esc close", width, screenInfo))
 	} else if u.dashboard {
 		lines = append(lines, screenComposerLine("⌘ resume sessions  ·  ↑↓ select  ·  1–9 attach  ·  Esc close", width, screenInfo))
 	} else {
@@ -753,6 +755,8 @@ func (u *ui) screenStatusLabel() string {
 		if u.reconnectRetryPending {
 			label += " · retry pending"
 		}
+	} else if u.backendPicker {
+		label = "backend · pick"
 	} else if u.dashboard {
 		label = "dashboard · sessions"
 	} else if u.approval != nil {
@@ -789,6 +793,9 @@ func (u *ui) screenDockLine(width int) string {
 	}
 	if u.shortcuts {
 		footer = "Ctrl+X close shortcuts  ·  Ctrl+\\ dashboard  ·  Esc close"
+	}
+	if u.backendPicker {
+		footer = "↑↓ select  ·  Enter/1–9 switch  ·  Esc close"
 	}
 	if u.dashboard {
 		footer = "↑↓ select  ·  Enter/1–9 resume  ·  n new session  ·  r refresh  ·  Esc/Ctrl+\\ close"

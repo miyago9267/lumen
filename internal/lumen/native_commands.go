@@ -72,6 +72,7 @@ var slashCommandCatalog = []slashCommand{
 	{name: "subagents", description: "show or manage subagents", supportsInlineArgs: true},
 	{name: "help", description: "show available commands"},
 	{name: "dashboard", description: "supervise top-level sessions"},
+	{name: "backend", description: "switch backend (starts a new session)", supportsInlineArgs: true},
 }
 
 func slashCommandByName(name string) (slashCommand, bool) {
@@ -152,7 +153,7 @@ func slashCommandInput(value string) (string, string, bool) {
 }
 
 func (u *ui) commandPopupVisible() bool {
-	if u.commandPopupDismissed || u.approval != nil || u.inputRequest != nil || u.dashboard || u.shortcuts {
+	if u.commandPopupDismissed || u.approval != nil || u.inputRequest != nil || u.dashboard || u.backendPicker || u.shortcuts {
 		return false
 	}
 	value := string(u.input)

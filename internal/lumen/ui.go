@@ -418,8 +418,11 @@ type ui struct {
 	corallineSnapshot     string
 	corallineError        string
 	serverFactory         func() (Backend, error)
-	registry              *backendRegistry // 可用 backend（/backend 使用）；nil 表示不支援切換
-	clock                 func() time.Time // nil 使用 time.Now；測試注入
+	backendPicker         bool
+	backendPickerIndex    int
+	openBackend           func(name string) (Backend, error) // nil 使用 registry；測試注入
+	registry              *backendRegistry                   // 可用 backend（/backend 使用）；nil 表示不支援切換
+	clock                 func() time.Time                   // nil 使用 time.Now；測試注入
 }
 
 func newUI(backend Backend, thread threadSummary, cwd string, fullscreen bool, overrides runtimeOverrides) *ui {
@@ -458,9 +461,6 @@ func (u *ui) runInline(initialPrompt string, interactive bool) error {
 		defer lifecycle.Close()
 	}
 
-	backend := u.backend
-	events := backend.Events()
-
 	u.renderHeader()
 	u.renderHistory()
 	var keys <-chan keyEvent
@@ -479,6 +479,9 @@ func (u *ui) runInline(initialPrompt string, interactive bool) error {
 	}
 
 	for {
+		// /backend 會換掉 u.backend，所以每一輪都重新取 Events。
+		backend := u.backend
+		events := backend.Events()
 		select {
 		case key, ok := <-keys:
 			if !ok {
@@ -669,6 +672,9 @@ func (u *ui) handleKey(key keyEvent) error {
 			return nil
 		}
 		return u.toggleDashboard()
+	}
+	if u.screenMode && u.backendPicker && u.approval == nil && u.inputRequest == nil {
+		return u.handleBackendPickerKey(key)
 	}
 	if u.screenMode && u.dashboard && u.approval == nil && u.inputRequest == nil {
 		return u.handleDashboardKey(key)
@@ -871,6 +877,8 @@ func (u *ui) handleCommand(value string) error {
 		u.showStatus()
 	case "dashboard":
 		return u.openDashboard()
+	case "backend":
+		return u.commandBackend(args)
 	case "quit":
 		return errQuit
 	default:

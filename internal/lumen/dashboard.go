@@ -21,6 +21,7 @@ func (u *ui) openDashboard() error {
 	if !u.screenMode {
 		return fmt.Errorf("dashboard requires full-screen mode; rerun without --minimal")
 	}
+	u.backendPicker = false
 	u.dashboard = true
 	u.dashboardIndex = 0
 	u.dashboardError = ""

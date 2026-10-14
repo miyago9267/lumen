@@ -45,6 +45,9 @@ type screenContentLine struct {
 }
 
 func (u *ui) screenTranscriptRows(width int) []screenTranscriptRow {
+	if u.backendPicker {
+		return u.screenBackendPickerRows(width)
+	}
 	if u.dashboard {
 		return u.screenDashboardRows(width)
 	}
@@ -703,7 +706,7 @@ func (u *ui) screenTurnTargetAtPoint(point screenPoint, width int) (screenTurnTa
 }
 
 func (u *ui) beginScreenSelection(x, y, width, height int) bool {
-	if !u.screenMode || u.dashboard || u.shortcuts || u.approval != nil || u.inputRequest != nil {
+	if !u.screenMode || u.dashboard || u.backendPicker || u.shortcuts || u.approval != nil || u.inputRequest != nil {
 		return false
 	}
 	point, ok := u.screenTranscriptHit(x, y, width, height)
