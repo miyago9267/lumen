@@ -57,8 +57,8 @@ func (u *ui) runFullscreen(initialPrompt string) error {
 	}
 	defer lifecycle.Close()
 	defer func() {
-		if u.client != nil {
-			u.client.Close()
+		if backend := u.be(); backend != nil {
+			backend.Close()
 		}
 	}()
 	supervisor := newSessionSupervisor(u.serverFactory)
@@ -125,34 +125,30 @@ func (u *ui) runFullscreen(initialPrompt string) error {
 			retryTimer.Stop()
 		}
 	}()
-	handleDisconnect := func(client *appServer, cause error) {
-		if client == nil || u.client != client {
+	handleDisconnect := func(backend Backend, cause error) {
+		if backend == nil || u.be() != backend {
 			return
 		}
 		if cause == nil {
-			cause = client.failureError()
+			_, cause = backend.Disconnected()
 		}
-		client.Close()
+		backend.Close()
 		u.markConnectionLost(cause)
 		reconnectAttempt = 0
 		startReconnect()
 		invalidate()
 	}
 	if initialPrompt != "" {
-		initialClient := u.client
+		initialBackend := u.be()
 		if err := u.submit(initialPrompt); err != nil {
 			u.input = []rune(initialPrompt)
 			u.cursor = len(u.input)
-			connectionFailed := initialClient != nil && initialClient.failureError() != nil
-			if !connectionFailed && initialClient != nil {
-				select {
-				case <-initialClient.closed:
-					connectionFailed = true
-				default:
-				}
+			connectionFailed, connectionErr := false, error(nil)
+			if initialBackend != nil {
+				connectionFailed, connectionErr = initialBackend.Disconnected()
 			}
 			if connectionFailed {
-				handleDisconnect(initialClient, initialClient.failureError())
+				handleDisconnect(initialBackend, connectionErr)
 			} else {
 				u.reportUIError(err)
 			}
@@ -167,16 +163,10 @@ func (u *ui) runFullscreen(initialPrompt string) error {
 	dirty = false
 
 	for {
-		client := u.client
-		var requests <-chan serverRequest
-		var notifications <-chan rpcMessage
-		var clientErrors <-chan error
-		var clientClosed <-chan struct{}
-		if client != nil {
-			requests = client.requests
-			notifications = client.notifications
-			clientErrors = client.errors
-			clientClosed = client.closed
+		backend := u.be()
+		var events <-chan Event
+		if backend != nil {
+			events = backend.Events()
 		}
 		select {
 		case key, ok := <-keyEvents:
@@ -191,36 +181,21 @@ func (u *ui) runFullscreen(initialPrompt string) error {
 			}
 			setReasoningTimer()
 			invalidate()
-		case request, ok := <-requests:
+		case event, ok := <-events:
 			if !ok {
-				handleDisconnect(client, nil)
+				handleDisconnect(backend, nil)
 				continue
 			}
-			if err := u.recoverUI("handle server request", func() { u.handleServerRequest(request) }); err != nil {
+			if lost, isLost := event.(EvConnectionLost); isLost {
+				handleDisconnect(backend, lost.Err)
+				setReasoningTimer()
+				continue
+			}
+			if err := u.recoverUI("handle event", func() { u.handleEvent(event) }); err != nil {
 				u.reportUIError(err)
 			}
 			setReasoningTimer()
 			invalidate()
-		case notification, ok := <-notifications:
-			if !ok {
-				handleDisconnect(client, nil)
-				continue
-			}
-			if err := u.recoverUI("handle notification", func() { u.handleNotification(notification) }); err != nil {
-				u.reportUIError(err)
-			}
-			setReasoningTimer()
-			invalidate()
-		case clientError, ok := <-clientErrors:
-			if !ok {
-				handleDisconnect(client, nil)
-				continue
-			}
-			handleDisconnect(client, clientError)
-			setReasoningTimer()
-		case <-clientClosed:
-			handleDisconnect(client, nil)
-			setReasoningTimer()
 		case result := <-supervisor.Results():
 			if result.err != nil {
 				reconnectAttempt++
@@ -241,7 +216,7 @@ func (u *ui) runFullscreen(initialPrompt string) error {
 			retryResults = nil
 			u.reconnectRetryPending = false
 			invalidate()
-			if u.client == nil {
+			if u.be() == nil {
 				startReconnect()
 			}
 		case <-renderWake:
@@ -794,7 +769,7 @@ func (u *ui) screenStatusLabel() string {
 		}
 	} else if u.replyTarget.key != "" {
 		label = fmt.Sprintf("ask about turn %d · type follow-up", u.replyTarget.ordinal)
-	} else if u.client == nil {
+	} else if u.be() == nil {
 		label = "detached · app-server unavailable"
 	} else {
 		label = fmt.Sprintf("%s (%s) · %s", u.effectiveModel(), u.effectiveEffort(), u.effectiveApproval())

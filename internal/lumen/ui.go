@@ -270,7 +270,7 @@ func parseSGRMouse(sequence string) (keyEvent, bool) {
 }
 
 type approvalRequest struct {
-	id        json.RawMessage
+	id        string
 	available []string
 	action    string
 	cwd       string
@@ -296,7 +296,7 @@ type userInputAnswer struct {
 }
 
 type userInputRequest struct {
-	id          json.RawMessage
+	id          string
 	questions   []userInputQuestion
 	answers     map[string]userInputAnswer
 	index       int
@@ -334,7 +334,9 @@ type screenSelection struct {
 }
 
 type ui struct {
+	// client 是 codex transport；UI 一律透過 be() 取得 Backend，不直接呼叫 client。
 	client     *appServer
+	codex      *codexBackend
 	thread     threadSummary
 	cwd        string
 	fullscreen bool
@@ -419,6 +421,18 @@ func newUI(client *appServer, thread threadSummary, cwd string, fullscreen bool,
 	}
 }
 
+// be 回傳目前的 Backend；連線中斷（client == nil）時為 nil。
+func (u *ui) be() Backend {
+	if u.client == nil {
+		u.codex = nil
+		return nil
+	}
+	if u.codex == nil || u.codex.client != u.client {
+		u.codex = newCodexBackend(u.client, u.thread.ID)
+	}
+	return u.codex
+}
+
 func (u *ui) run(initialPrompt string) error {
 	interactive := term.IsTerminal(int(os.Stdin.Fd()))
 	if u.fullscreen && interactive {
@@ -436,7 +450,8 @@ func (u *ui) runInline(initialPrompt string, interactive bool) error {
 		defer lifecycle.Close()
 	}
 
-	client := u.client
+	backend := u.be()
+	events := backend.Events()
 
 	u.renderHeader()
 	u.renderHistory()
@@ -470,36 +485,46 @@ func (u *ui) runInline(initialPrompt string, interactive bool) error {
 					u.renderPrompt()
 				}
 			}
-		case request, ok := <-client.requests:
+		case event, ok := <-events:
 			if !ok {
-				return errors.New("app-server request channel closed")
+				return errors.New("app-server closed")
 			}
-			if !interactive {
-				_ = client.respondError(request.id, -32001, "lumen requires an interactive terminal for approval")
-				return errors.New("approval requires an interactive terminal")
+			if lost, ok := event.(EvConnectionLost); ok {
+				if lost.Err != nil {
+					u.printError(lost.Err)
+					return lost.Err
+				}
+				return errors.New("app-server closed")
 			}
-			if err := u.recoverUI("handle server request", func() { u.handleServerRequest(request) }); err != nil {
-				u.printError(err)
+			if reqID, ok := interactiveRequestID(event); ok {
+				if !interactive {
+					_ = backend.RejectRequest(reqID, "lumen requires an interactive terminal for approval")
+					return errors.New("approval requires an interactive terminal")
+				}
+				if err := u.recoverUI("handle server request", func() { u.handleEvent(event) }); err != nil {
+					u.printError(err)
+				}
+				continue
 			}
-		case notification, ok := <-client.notifications:
-			if !ok {
-				return errors.New("app-server notification channel closed")
-			}
-			if err := u.recoverUI("handle notification", func() { u.handleNotification(notification) }); err != nil {
+			if err := u.recoverUI("handle notification", func() { u.handleEvent(event) }); err != nil {
 				u.printError(err)
 			}
 			if !interactive && !u.busy {
 				return nil
 			}
-		case err := <-client.errors:
-			if err != nil {
-				u.printError(err)
-				return err
-			}
-		case <-client.closed:
-			return errors.New("app-server closed")
 		}
 	}
+}
+
+// interactiveRequestID 回傳需要使用者互動才能回覆的 request 的 id。
+func interactiveRequestID(event Event) (string, bool) {
+	switch event := event.(type) {
+	case EvApprovalRequest:
+		return event.ReqID, true
+	case EvInputRequest:
+		return event.ReqID, true
+	}
+	return "", false
 }
 
 func (u *ui) renderHeader() {
@@ -770,9 +795,9 @@ func (u *ui) handleCtrlC() error {
 	message := "press Ctrl-C again to exit"
 	if u.busy {
 		message = "interrupt requested · press Ctrl-C again to exit"
-		if u.turnID != "" && u.client != nil {
+		if backend := u.be(); u.turnID != "" && backend != nil {
 			u.printStatus(message, yellow)
-			return u.client.Interrupt(u.thread.ID, u.turnID)
+			return backend.Cancel(u.thread.ID, u.turnID)
 		}
 	}
 	u.printStatus(message, yellow)
@@ -945,7 +970,8 @@ func (u *ui) moveVertical(direction int) {
 }
 
 func (u *ui) submit(value string) error {
-	if u.client == nil {
+	backend := u.be()
+	if backend == nil {
 		return errors.New("app-server is reconnecting; prompt was not sent")
 	}
 	u.showWelcome = false
@@ -971,7 +997,7 @@ func (u *ui) submit(value string) error {
 	if !u.screenMode {
 		fmt.Fprintf(u.out, "%s  … working%s%s\n", muted, reset, "")
 	}
-	turnID, err := u.client.StartTurn(u.thread.ID, value, u.overrides)
+	turnID, err := backend.Prompt(u.thread.ID, value, u.overrides)
 	if err != nil {
 		u.busy = false
 		u.renderPrompt()
@@ -982,219 +1008,28 @@ func (u *ui) submit(value string) error {
 	return nil
 }
 
-func (u *ui) handleNotification(message rpcMessage) {
-	switch message.Method {
-	case "turn/started":
-		var params struct {
-			ThreadID string `json:"threadId"`
-			Turn     struct {
-				ID string `json:"id"`
-			} `json:"turn"`
-		}
-		if json.Unmarshal(message.Params, &params) == nil && params.ThreadID == u.thread.ID {
-			u.turnID = params.Turn.ID
-			u.bindActiveScreenTurn(params.Turn.ID)
-		}
-	case "item/started":
-		u.handleItemStarted(message.Params)
-	case "item/agentMessage/delta":
-		var params struct {
-			ThreadID string `json:"threadId"`
-			Delta    string `json:"delta"`
-		}
-		if json.Unmarshal(message.Params, &params) == nil && params.ThreadID == u.thread.ID {
-			u.reasoningActive = false
-			u.screenAppend(screenAssistant, params.Delta)
-			if u.screenMode {
-				u.assistant = true
-				u.lastOutput = time.Now()
-				return
-			}
-			if !u.assistant {
-				u.clearPrompt()
-				fmt.Fprintf(u.out, "\n%s› assistant%s ", green, reset)
-				u.assistant = true
-			}
-			fmt.Fprint(u.out, sanitizeText(params.Delta))
+// handleEvent 是 UI 處理 backend event 的唯一入口。
+func (u *ui) handleEvent(event Event) {
+	switch event := event.(type) {
+	case EvTurnStarted:
+		u.turnID = event.TurnID
+		u.bindActiveScreenTurn(event.TurnID)
+	case EvAssistantDelta:
+		u.reasoningActive = false
+		u.screenAppend(screenAssistant, event.Text)
+		if u.screenMode {
+			u.assistant = true
 			u.lastOutput = time.Now()
+			return
 		}
-	case "item/commandExecution/outputDelta":
-		var params struct {
-			ThreadID string `json:"threadId"`
-			Delta    string `json:"delta"`
-		}
-		if json.Unmarshal(message.Params, &params) == nil && params.ThreadID == u.thread.ID {
-			u.reasoningActive = false
-			firstOutput := !u.toolOutput
-			if firstOutput {
-				u.recap.outputs++
-				u.toolOutput = true
-			}
-			if firstOutput {
-				u.screenAdd(screenTool, "output")
-			}
-			u.screenAppend(screenTool, params.Delta)
-			if u.screenMode {
-				u.tool = true
-				u.lastOutput = time.Now()
-				return
-			}
-			if !u.tool {
-				u.clearPrompt()
-				fmt.Fprintf(u.out, "\n%s  output%s\n", muted, reset)
-				u.tool = true
-			}
-			fmt.Fprint(u.out, indentText(sanitizeText(params.Delta), "    "))
-			u.lastOutput = time.Now()
-		}
-	case "item/completed":
-		u.handleItemCompleted(message.Params)
-	case "turn/plan/updated":
-		var params struct {
-			ThreadID string `json:"threadId"`
-			Plan     []struct {
-				Step   string `json:"step"`
-				Status string `json:"status"`
-			} `json:"plan"`
-		}
-		if json.Unmarshal(message.Params, &params) == nil && params.ThreadID == u.thread.ID {
-			u.reasoningActive = false
-			var planLines []string
-			for _, item := range params.Plan {
-				planLines = append(planLines, fmt.Sprintf("[%s] %s", item.Status, item.Step))
-			}
-			u.screenAdd(screenPlan, strings.Join(planLines, "\n"))
-			if u.screenMode {
-				return
-			}
+		if !u.assistant {
 			u.clearPrompt()
-			fmt.Fprintf(u.out, "\n%s  plan%s", cyan, reset)
-			for _, item := range params.Plan {
-				fmt.Fprintf(u.out, "\n    [%s] %s", sanitizeText(item.Status), sanitizeText(item.Step))
-			}
-			fmt.Fprintln(u.out)
+			fmt.Fprintf(u.out, "\n%s› assistant%s ", green, reset)
+			u.assistant = true
 		}
-	case "thread/name/updated":
-		var params struct {
-			ThreadID string `json:"threadId"`
-			Name     string `json:"name"`
-		}
-		if json.Unmarshal(message.Params, &params) == nil && params.ThreadID == u.thread.ID {
-			u.thread.Name = params.Name
-		}
-	case "thread/tokenUsage/updated":
-		var params struct {
-			ThreadID   string `json:"threadId"`
-			TokenUsage struct {
-				Total struct {
-					TotalTokens              int64 `json:"totalTokens"`
-					InputTokens              int64 `json:"inputTokens"`
-					OutputTokens             int64 `json:"outputTokens"`
-					CachedInputTokens        int64 `json:"cachedInputTokens"`
-					CacheReadInputTokens     int64 `json:"cacheReadInputTokens"`
-					CacheCreationInputTokens int64 `json:"cacheCreationInputTokens"`
-				} `json:"total"`
-				ModelContextWindow *int64 `json:"modelContextWindow"`
-			} `json:"tokenUsage"`
-		}
-		if json.Unmarshal(message.Params, &params) == nil && params.ThreadID == u.thread.ID {
-			u.usage.totalTokens = params.TokenUsage.Total.TotalTokens
-			u.usage.inputTokens = params.TokenUsage.Total.InputTokens
-			u.usage.outputTokens = params.TokenUsage.Total.OutputTokens
-			u.usage.cacheReadInputTokens = params.TokenUsage.Total.CacheReadInputTokens
-			if u.usage.cacheReadInputTokens == 0 {
-				u.usage.cacheReadInputTokens = params.TokenUsage.Total.CachedInputTokens
-			}
-			u.usage.cacheCreationInputTokens = params.TokenUsage.Total.CacheCreationInputTokens
-			if params.TokenUsage.ModelContextWindow != nil {
-				u.usage.modelContextWindow = *params.TokenUsage.ModelContextWindow
-				u.usage.hasContextWindow = true
-			}
-		}
-	case "turn/completed":
-		var params struct {
-			ThreadID string `json:"threadId"`
-			Turn     struct {
-				Status string `json:"status"`
-			} `json:"turn"`
-		}
-		if json.Unmarshal(message.Params, &params) == nil && params.ThreadID == u.thread.ID {
-			u.finishTurn(params.Turn.Status)
-		}
-	case "error":
-		var params struct {
-			Message string `json:"message"`
-		}
-		if json.Unmarshal(message.Params, &params) == nil {
-			u.printError(errors.New(params.Message))
-		}
-	case "warning", "configWarning", "guardianWarning":
-		var params struct {
-			Message string `json:"message"`
-		}
-		if json.Unmarshal(message.Params, &params) == nil && params.Message != "" {
-			u.printStatus(compactWarning(params.Message), yellow)
-		}
-	}
-}
-
-func (u *ui) handleItemStarted(raw json.RawMessage) {
-	var params struct {
-		ThreadID string         `json:"threadId"`
-		Item     map[string]any `json:"item"`
-	}
-	if json.Unmarshal(raw, &params) != nil || params.ThreadID != u.thread.ID {
-		return
-	}
-	typeName, _ := params.Item["type"].(string)
-	switch typeName {
-	case "commandExecution":
-		u.reasoningActive = false
-		command, _ := params.Item["command"].(string)
-		u.recap.toolCount++
-		u.toolOutput = false
-		if command != "" {
-			u.recap.commands = append(u.recap.commands, command)
-		}
-		u.screenAdd(screenTool, "$ "+command)
-		if u.screenMode {
-			u.tool = true
-			u.toolOutput = false
-			return
-		}
-		u.clearPrompt()
-		fmt.Fprintf(u.out, "\n%s  $ %s%s\n", yellow, sanitizeText(command), reset)
-		u.tool = true
-	case "fileChange":
-		u.reasoningActive = false
-		u.recap.toolCount++
-		u.recap.fileChanges++
-		u.toolOutput = false
-		u.screenAdd(screenTool, "✎ file change")
-		if u.screenMode {
-			u.tool = true
-			u.toolOutput = false
-			return
-		}
-		u.clearPrompt()
-		fmt.Fprintf(u.out, "\n%s  ✎ file change%s\n", yellow, reset)
-		u.tool = true
-	case "mcpToolCall":
-		u.reasoningActive = false
-		server, _ := params.Item["server"].(string)
-		tool, _ := params.Item["tool"].(string)
-		u.recap.toolCount++
-		u.toolOutput = false
-		u.screenAdd(screenTool, fmt.Sprintf("◇ %s/%s", server, tool))
-		if u.screenMode {
-			u.tool = true
-			u.toolOutput = false
-			return
-		}
-		u.clearPrompt()
-		fmt.Fprintf(u.out, "\n%s  ◇ %s/%s%s\n", yellow, sanitizeText(server), sanitizeText(tool), reset)
-		u.tool = true
-	case "reasoning":
+		fmt.Fprint(u.out, sanitizeText(event.Text))
+		u.lastOutput = time.Now()
+	case EvReasoningStarted:
 		if u.reasoningShown {
 			return
 		}
@@ -1206,43 +1041,154 @@ func (u *ui) handleItemStarted(raw json.RawMessage) {
 		}
 		u.clearPrompt()
 		fmt.Fprintf(u.out, "\n%s  … reasoning%s\n", muted, reset)
+	case EvReasoningCompleted:
+		u.reasoningActive = false
+	case EvReasoningDelta:
+		// 預設不顯示 reasoning 文字，只靠 EvReasoningStarted 維持 thinking 狀態。
+	case EvToolStarted:
+		u.reasoningActive = false
+		u.recap.toolCount++
+		if event.Kind == ToolEdit {
+			u.recap.fileChanges++
+		}
+		u.toolOutput = false
+		if event.Command != "" {
+			u.recap.commands = append(u.recap.commands, event.Command)
+		}
+		u.screenAdd(screenTool, event.Title)
+		if u.screenMode {
+			u.tool = true
+			u.toolOutput = false
+			return
+		}
+		u.clearPrompt()
+		fmt.Fprintf(u.out, "\n%s  %s%s\n", yellow, sanitizeText(event.Title), reset)
+		u.tool = true
+	case EvToolOutput:
+		u.reasoningActive = false
+		firstOutput := !u.toolOutput
+		if firstOutput {
+			u.recap.outputs++
+			u.toolOutput = true
+			u.screenAdd(screenTool, "output")
+		}
+		u.screenAppend(screenTool, event.Text)
+		if u.screenMode {
+			u.tool = true
+			u.lastOutput = time.Now()
+			return
+		}
+		if !u.tool {
+			u.clearPrompt()
+			fmt.Fprintf(u.out, "\n%s  output%s\n", muted, reset)
+			u.tool = true
+		}
+		fmt.Fprint(u.out, indentText(sanitizeText(event.Text), "    "))
+		u.lastOutput = time.Now()
+	case EvToolCompleted:
+		u.reasoningActive = false
+		if event.Label == "" {
+			return
+		}
+		u.screenAddToolActivityStatus(event.Label, u.activeScreenTurnKey, u.activeScreenTurnID)
+		if u.screenMode {
+			return
+		}
+		u.clearPrompt()
+		fmt.Fprintf(u.out, "%s  %s%s\n", statusColor(event.Label), sanitizeText(event.Label), reset)
+	case EvPlanUpdated:
+		u.reasoningActive = false
+		var planLines []string
+		for _, item := range event.Items {
+			planLines = append(planLines, fmt.Sprintf("[%s] %s", item.Status, item.Text))
+		}
+		u.screenAdd(screenPlan, strings.Join(planLines, "\n"))
+		if u.screenMode {
+			return
+		}
+		u.clearPrompt()
+		fmt.Fprintf(u.out, "\n%s  plan%s", cyan, reset)
+		for _, item := range event.Items {
+			fmt.Fprintf(u.out, "\n    [%s] %s", sanitizeText(item.Status), sanitizeText(item.Text))
+		}
+		fmt.Fprintln(u.out)
+	case EvSessionTitle:
+		u.thread.Name = event.Title
+	case EvUsage:
+		u.usage.totalTokens = event.Used
+		u.usage.inputTokens, u.usage.outputTokens = 0, 0
+		u.usage.cacheReadInputTokens, u.usage.cacheCreationInputTokens = 0, 0
+		if event.Breakdown != nil {
+			u.usage.inputTokens = event.Breakdown.Input
+			u.usage.outputTokens = event.Breakdown.Output
+			u.usage.cacheReadInputTokens = event.Breakdown.CacheRead
+			u.usage.cacheCreationInputTokens = event.Breakdown.CacheCreation
+		}
+		if event.Size != nil {
+			u.usage.modelContextWindow = *event.Size
+			u.usage.hasContextWindow = true
+		}
+	case EvTurnCompleted:
+		u.finishTurn(event.Label)
+	case EvNotice:
+		switch event.Level {
+		case NoticeError:
+			u.printError(errors.New(event.Text))
+		case NoticeWarn:
+			u.printStatus(event.Text, yellow)
+		default:
+			u.printStatus(event.Text, muted)
+		}
+	case EvApprovalRequest:
+		u.presentApproval(event)
+	case EvInputRequest:
+		u.presentInputRequest(event)
+	case EvRequestRejected:
+		if u.screenMode {
+			u.screenAdd(screenError, "request rejected · "+event.Message)
+			return
+		}
+		u.clearPrompt()
+		fmt.Fprintf(u.out, "\n%s  request rejected · %s%s\n", red, sanitizeText(event.Message), reset)
+	}
+}
+
+// codexShim 取得 shim 用的 codexBackend，並把 UI 目前的 thread / turn 同步給它。
+func (u *ui) codexShim() *codexBackend {
+	backend, ok := u.be().(*codexBackend)
+	if !ok {
+		backend = newCodexBackend(nil, u.thread.ID)
+	}
+	backend.setState(u.thread.ID, u.turnID)
+	return backend
+}
+
+// handleNotification、handleItemStarted、handleItemCompleted、handleServerRequest 是 codex 原始訊息的
+// 薄包裝：codex -> Event -> handleEvent，讓直接餵 codex 訊息的測試維持有效。
+func (u *ui) handleNotification(message rpcMessage) {
+	translator := codexTranslator{threadID: u.thread.ID, turnID: u.turnID}
+	for _, event := range translator.notification(message) {
+		u.handleEvent(event)
+	}
+}
+
+func (u *ui) handleItemStarted(raw json.RawMessage) {
+	translator := codexTranslator{threadID: u.thread.ID, turnID: u.turnID}
+	for _, event := range translator.itemStarted(raw) {
+		u.handleEvent(event)
 	}
 }
 
 func (u *ui) handleItemCompleted(raw json.RawMessage) {
-	var params struct {
-		ThreadID string         `json:"threadId"`
-		Item     map[string]any `json:"item"`
+	translator := codexTranslator{threadID: u.thread.ID, turnID: u.turnID}
+	for _, event := range translator.itemCompleted(raw) {
+		u.handleEvent(event)
 	}
-	if json.Unmarshal(raw, &params) != nil || params.ThreadID != u.thread.ID {
-		return
-	}
-	typeName, _ := params.Item["type"].(string)
-	switch typeName {
-	case "commandExecution":
-		status, _ := params.Item["status"].(string)
-		status = toolCompletionStatus(status, params.Item["exitCode"])
-		u.reasoningActive = false
-		if status == "" {
-			return
-		}
-		u.screenAddToolActivityStatus(status, u.activeScreenTurnKey, u.activeScreenTurnID)
-		if u.screenMode {
-			return
-		}
-		u.clearPrompt()
-		fmt.Fprintf(u.out, "%s  %s%s\n", statusColor(status), sanitizeText(status), reset)
-	case "fileChange":
-		u.reasoningActive = false
-		status, _ := params.Item["status"].(string)
-		u.screenAddToolActivityStatus(status, u.activeScreenTurnKey, u.activeScreenTurnID)
-		if u.screenMode {
-			return
-		}
-		u.clearPrompt()
-		fmt.Fprintf(u.out, "%s  %s%s\n", statusColor(status), sanitizeText(status), reset)
-	case "reasoning":
-		u.reasoningActive = false
+}
+
+func (u *ui) handleServerRequest(request serverRequest) {
+	for _, event := range u.codexShim().handleRequest(request) {
+		u.handleEvent(event)
 	}
 }
 
@@ -1279,143 +1225,24 @@ func (u *ui) finishTurn(status string) {
 	u.renderPrompt()
 }
 
-func (u *ui) handleServerRequest(request serverRequest) {
-	switch request.method {
-	case "item/commandExecution/requestApproval":
-		var params struct {
-			ThreadID           string   `json:"threadId"`
-			TurnID             string   `json:"turnId"`
-			ItemID             string   `json:"itemId"`
-			Command            string   `json:"command"`
-			CWD                string   `json:"cwd"`
-			Reason             string   `json:"reason"`
-			AvailableDecisions []string `json:"availableDecisions"`
-		}
-		if err := json.Unmarshal(request.params, &params); err != nil {
-			u.rejectServerRequest(request, "invalid approval parameters")
-			return
-		}
-		if err := u.validateServerRequest(params.ThreadID, params.TurnID); err != nil {
-			u.rejectServerRequest(request, err.Error())
-			return
-		}
-		if params.CWD == "" {
-			params.CWD = u.cwd
-		}
-		u.showApproval(request, params.Command, params.CWD, params.Reason, params.AvailableDecisions)
-	case "item/fileChange/requestApproval":
-		var params struct {
-			ThreadID           string   `json:"threadId"`
-			TurnID             string   `json:"turnId"`
-			Reason             string   `json:"reason"`
-			AvailableDecisions []string `json:"availableDecisions"`
-		}
-		if err := json.Unmarshal(request.params, &params); err != nil {
-			u.rejectServerRequest(request, "invalid file-change approval parameters")
-			return
-		}
-		if err := u.validateServerRequest(params.ThreadID, params.TurnID); err != nil {
-			u.rejectServerRequest(request, err.Error())
-			return
-		}
-		u.showApproval(request, "apply file changes", u.cwd, params.Reason, params.AvailableDecisions)
-	case "item/permissions/requestApproval":
-		var params struct {
-			ThreadID string          `json:"threadId"`
-			TurnID   string          `json:"turnId"`
-			Request  json.RawMessage `json:"permissions"`
-		}
-		if err := json.Unmarshal(request.params, &params); err != nil {
-			u.rejectServerRequest(request, "invalid permission parameters")
-			return
-		}
-		if err := u.validateServerRequest(params.ThreadID, params.TurnID); err != nil {
-			u.rejectServerRequest(request, err.Error())
-			return
-		}
-		if err := u.client.respond(request.id, map[string]any{
-			"permissions": map[string]any{},
-			"scope":       "turn",
-		}); err != nil {
-			u.printError(err)
-			return
-		}
-		u.printStatus("permission request denied · no additional access granted", yellow)
-	case "item/tool/requestUserInput":
-		var params struct {
-			ThreadID  string              `json:"threadId"`
-			TurnID    string              `json:"turnId"`
-			Questions []userInputQuestion `json:"questions"`
-		}
-		if err := json.Unmarshal(request.params, &params); err != nil {
-			u.rejectServerRequest(request, "invalid user-input parameters")
-			return
-		}
-		if err := u.validateServerRequest(params.ThreadID, params.TurnID); err != nil {
-			u.rejectServerRequest(request, err.Error())
-			return
-		}
-		for _, question := range params.Questions {
-			if question.ID == "" || question.Question == "" {
-				u.rejectServerRequest(request, "user-input question is missing id or question")
-				return
-			}
-		}
-		if len(params.Questions) == 0 {
-			_ = u.client.respond(request.id, map[string]any{"answers": map[string]userInputAnswer{}})
-			u.printStatus("user input request had no questions", yellow)
-			return
-		}
-		u.toolGroupBoundary++
-		u.clearPrompt()
-		u.input = nil
-		u.cursor = 0
-		u.dashboard = false
-		u.dashboardError = ""
-		u.inputRequest = &userInputRequest{
-			id:        request.id,
-			questions: params.Questions,
-			answers:   make(map[string]userInputAnswer, len(params.Questions)),
-		}
-		u.resetInputQuestion()
-		u.printStatus(fmt.Sprintf("input requested · %d question%s", len(params.Questions), pluralSuffix(len(params.Questions))), cyan)
-		u.renderPrompt()
-	default:
-		u.rejectServerRequest(request, "unsupported server request: "+request.method)
+func (u *ui) presentApproval(event EvApprovalRequest) {
+	available := make([]string, 0, len(event.Options))
+	for _, option := range event.Options {
+		available = append(available, option.ID)
 	}
-}
-
-func (u *ui) validateServerRequest(threadID, turnID string) error {
-	if threadID == "" {
-		return errors.New("server request missing thread id")
-	}
-	if threadID != u.thread.ID {
-		return errors.New("server request thread mismatch")
-	}
-	if turnID != "" && u.turnID != "" && turnID != u.turnID {
-		return errors.New("server request turn mismatch")
-	}
-	return nil
-}
-
-func (u *ui) rejectServerRequest(request serverRequest, message string) {
-	if u.screenMode {
-		u.screenAdd(screenError, "request rejected · "+message)
-	} else {
-		u.clearPrompt()
-		fmt.Fprintf(u.out, "\n%s  request rejected · %s%s\n", red, sanitizeText(message), reset)
-	}
-	if u.client != nil {
-		_ = u.client.respondError(request.id, -32602, "lumen: "+message)
-	}
+	u.showApprovalRequest(event.ReqID, event.Title, valueOr(event.CWD, u.cwd), event.Reason, available)
 }
 
 func (u *ui) showApproval(request serverRequest, action, cwd, reason string, available []string) {
+	u.showApprovalRequest(string(request.id), action, cwd, reason, available)
+}
+
+func (u *ui) showApprovalRequest(reqID, action, cwd, reason string, available []string) {
 	u.toolGroupBoundary++
 	u.clearPrompt()
 	u.dashboard = false
 	u.dashboardError = ""
-	u.approval = &approvalRequest{id: request.id, available: available, action: action, cwd: cwd, reason: reason}
+	u.approval = &approvalRequest{id: reqID, available: available, action: action, cwd: cwd, reason: reason}
 	if u.screenMode {
 		return
 	}
@@ -1426,6 +1253,30 @@ func (u *ui) showApproval(request serverRequest, action, cwd, reason string, ava
 		fmt.Fprintf(u.out, "%s  reason%s   %s\n", muted, reset, sanitizeText(reason))
 	}
 	fmt.Fprintf(u.out, "%s  %s%s\n", cyan, approvalHint(available), reset)
+}
+
+func (u *ui) presentInputRequest(event EvInputRequest) {
+	if len(event.Questions) == 0 {
+		if backend := u.be(); backend != nil {
+			_ = backend.AnswerInput(event.ReqID, map[string][]string{})
+		}
+		u.printStatus("user input request had no questions", yellow)
+		return
+	}
+	u.toolGroupBoundary++
+	u.clearPrompt()
+	u.input = nil
+	u.cursor = 0
+	u.dashboard = false
+	u.dashboardError = ""
+	u.inputRequest = &userInputRequest{
+		id:        event.ReqID,
+		questions: event.Questions,
+		answers:   make(map[string]userInputAnswer, len(event.Questions)),
+	}
+	u.resetInputQuestion()
+	u.printStatus(fmt.Sprintf("input requested · %d question%s", len(event.Questions), pluralSuffix(len(event.Questions))), cyan)
+	u.renderPrompt()
 }
 
 func (u *ui) handleApprovalKey(key keyEvent) error {
@@ -1455,7 +1306,11 @@ func (u *ui) handleApprovalKey(key keyEvent) error {
 		return nil
 	}
 	u.approval = nil
-	if err := u.client.respond(approval.id, map[string]string{"decision": decision}); err != nil {
+	backend := u.be()
+	if backend == nil {
+		return errors.New("app-server unavailable")
+	}
+	if err := backend.ResolveApproval(approval.id, decision); err != nil {
 		return err
 	}
 	if u.screenMode {
@@ -1579,13 +1434,21 @@ func (u *ui) finishInputRequest(cancel, interrupt bool) error {
 	u.inputRequest = nil
 	u.input = nil
 	u.cursor = 0
-	if err := u.client.respond(request.id, map[string]any{"answers": request.answers}); err != nil {
+	answers := make(map[string][]string, len(request.answers))
+	for id, answer := range request.answers {
+		answers[id] = answer.Answers
+	}
+	backend := u.be()
+	if backend == nil {
+		return errors.New("app-server unavailable")
+	}
+	if err := backend.AnswerInput(request.id, answers); err != nil {
 		return err
 	}
 	if cancel {
 		u.printStatus("input canceled", yellow)
 		if interrupt && u.turnID != "" {
-			return u.client.Interrupt(u.thread.ID, u.turnID)
+			return backend.Cancel(u.thread.ID, u.turnID)
 		}
 		return nil
 	}
