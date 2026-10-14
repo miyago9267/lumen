@@ -175,3 +175,33 @@ func TestReconnectFreshSessionShowsNotice(t *testing.T) {
 		}
 	}
 }
+
+func replayedThread() threadSummary {
+	return threadSummary{ID: "old", Turns: []historyTurn{{Items: []historyItem{
+		{Type: "userMessage", Content: []historyInput{{Type: "text", Text: "hello agent"}}},
+		{Type: "agentMessage", Text: "hi there"},
+	}}}}
+}
+
+// T-P2-12：reconnect 回傳的 replay history 不得再寫入已有內容的 transcript；空 transcript 才還原。
+func TestReconnectDoesNotDuplicateExistingTranscript(t *testing.T) {
+	frontend := &ui{screenMode: true, cwd: "/tmp"}
+	frontend.adoptReconnectResult(reconnectResult{backend: &fakeBackend{}, thread: replayedThread()})
+	if got := strings.Count(stripANSI(frontend.screenFrame(120, 30)), "hello agent"); got != 1 {
+		t.Fatalf("empty transcript should be restored once, got %d", got)
+	}
+	frontend.adoptReconnectResult(reconnectResult{backend: &fakeBackend{}, thread: replayedThread()})
+	if got := strings.Count(stripANSI(frontend.screenFrame(120, 30)), "hello agent"); got != 1 {
+		t.Fatalf("reconnect duplicated the transcript, prompt shown %d times", got)
+	}
+}
+
+// reconnect 不重播時，原本的 Turns 要保留（/copy、fork 仍依賴）。
+func TestReconnectKeepsTurnsWhenNoReplay(t *testing.T) {
+	frontend := &ui{screenMode: true, cwd: "/tmp", thread: replayedThread()}
+	frontend.screenAdd(screenUser, "hello agent")
+	frontend.adoptReconnectResult(reconnectResult{backend: &fakeBackend{}, thread: threadSummary{ID: "old"}})
+	if len(frontend.thread.Turns) != 1 {
+		t.Fatalf("turns lost on reconnect: %#v", frontend.thread.Turns)
+	}
+}

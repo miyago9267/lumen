@@ -16,6 +16,11 @@ type reconnectSnapshot struct {
 	hasTranscriptContent bool
 }
 
+// sessionReconnector 由能在不重播 history 的情況下接回 session 的 backend 實作（ACP session/resume）。
+type sessionReconnector interface {
+	ReconnectSession(id, cwd string, rt runtimeOverrides) (SessionInfo, error)
+}
+
 type sessionSupervisor struct {
 	factory func() (Backend, error)
 	done    chan struct{}
@@ -124,6 +129,9 @@ func reconnectWithSnapshot(factory func() (Backend, error), snapshot reconnectSn
 	if err == nil {
 		if snapshot.threadID != "" {
 			thread, err = reconnectCallWithThread(done, backend, func() (threadSummary, error) {
+				if reconnector, ok := backend.(sessionReconnector); ok && snapshot.hasTranscriptContent {
+					return reconnector.ReconnectSession(snapshot.threadID, snapshot.cwd, snapshot.overrides)
+				}
 				return backend.ResumeSession(snapshot.threadID, snapshot.cwd, snapshot.overrides)
 			})
 			if canStartFreshThreadAfterResume(err, snapshot.hasTranscriptContent) {

@@ -880,3 +880,51 @@ func TestScrubACPEnv(t *testing.T) {
 		t.Fatalf("scrubACPEnv() = %v", got)
 	}
 }
+
+func acpMethods(t *testing.T, path string) []string {
+	t.Helper()
+	var methods []string
+	for _, entry := range readFakeACPLog(t, path) {
+		if raw, ok := entry["recv"]; ok {
+			var message fakeACPMessage
+			if json.Unmarshal(raw, &message) == nil && message.Method != "" {
+				methods = append(methods, message.Method)
+			}
+		}
+	}
+	return methods
+}
+
+// T-P2-12：transcript 已有內容時 reconnect 優先 session/resume（不重播），沒有 resume 時 load 的 replay 被丟棄。
+func TestACPReconnectWithTranscriptSkipsReplay(t *testing.T) {
+	for name, tc := range map[string]struct {
+		caps, want string
+	}{"resume": {"load,resume,list", "session/resume"}, "load only": {"load,list", "session/load"}} {
+		t.Run(name, func(t *testing.T) {
+			cfg, logPath := fakeACPConfig(t, map[string]string{"FAKEACP_CAPS": tc.caps})
+			factory := func() (Backend, error) { return newACPBackend(cfg), nil }
+			result := reconnectWithSnapshot(factory, reconnectSnapshot{threadID: "old", cwd: t.TempDir(), hasTranscriptContent: true}, nil)
+			if result.err != nil || result.thread.ID != "old" || len(result.thread.Turns) != 0 {
+				t.Fatalf("reconnect result = %#v", result)
+			}
+			result.backend.Close()
+			if methods := strings.Join(acpMethods(t, logPath), ","); !strings.Contains(methods, tc.want) {
+				t.Fatalf("methods = %s, want %s", methods, tc.want)
+			}
+		})
+	}
+}
+
+// 沒有 transcript（啟動 --resume 後馬上斷線）時仍用 load 取回 history。
+func TestACPReconnectWithoutTranscriptStillLoads(t *testing.T) {
+	cfg, logPath := fakeACPConfig(t, map[string]string{"FAKEACP_CAPS": "load,resume,list"})
+	factory := func() (Backend, error) { return newACPBackend(cfg), nil }
+	result := reconnectWithSnapshot(factory, reconnectSnapshot{threadID: "old", cwd: t.TempDir()}, nil)
+	if result.err != nil || len(result.thread.Turns) != 2 {
+		t.Fatalf("reconnect result = %#v", result)
+	}
+	result.backend.Close()
+	if methods := strings.Join(acpMethods(t, logPath), ","); !strings.Contains(methods, "session/load") {
+		t.Fatalf("methods = %s", methods)
+	}
+}

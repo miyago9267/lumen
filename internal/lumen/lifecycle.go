@@ -226,10 +226,17 @@ func (u *ui) markReconnectFailed(err error, attempt int) {
 
 func (u *ui) adoptReconnected(backend Backend, thread threadSummary) {
 	u.backend = backend
+	// 已有 transcript 時，沒有 turn id 的 history（ACP load 的重播）無法與既有 entry 對齊，不得再寫入；
+	// 有 turn id 的（codex）由 replay 依 id 合併。沒有可用的重播時保留原 Turns。
+	hadContent := u.hasTranscriptContent()
 	if thread.ID != "" {
+		previous := u.thread
 		u.thread = thread
+		if hadContent && previous.ID == thread.ID && !hasTurnIDs(thread.Turns) {
+			u.thread.Turns = previous.Turns
+		}
 	}
-	u.replayThreadHistory(thread)
+	u.replayThreadHistory(thread, hadContent)
 	u.cwd = valueOr(u.thread.CWD, u.cwd)
 	u.branch = gitBranch(u.cwd)
 	u.connectionError = ""
@@ -264,12 +271,25 @@ func (u *ui) adoptReconnectResult(result reconnectResult) {
 	}
 }
 
-func (u *ui) replayThreadHistory(thread threadSummary) {
+func hasTurnIDs(turns []historyTurn) bool {
+	for _, turn := range turns {
+		if turn.ID != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// replayThreadHistory 還原 history；skipUnidentified 為 true 時略過沒有 turn id 的 turn。
+func (u *ui) replayThreadHistory(thread threadSummary, skipUnidentified bool) {
 	start := 0
 	if len(thread.Turns) > 20 {
 		start = len(thread.Turns) - 20
 	}
 	for _, turn := range thread.Turns[start:] {
+		if skipUnidentified && turn.ID == "" {
+			continue
+		}
 		turnKey := turn.ID
 		if turnKey == "" {
 			turnKey = u.newScreenTurnKey()

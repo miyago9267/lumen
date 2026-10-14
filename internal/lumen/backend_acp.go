@@ -535,6 +535,16 @@ func (b *acpBackend) sessionError(err error) error {
 }
 
 func (b *acpBackend) ResumeSession(id, cwd string, rt runtimeOverrides) (SessionInfo, error) {
+	return b.resumeSession(id, cwd, false)
+}
+
+// ReconnectSession 接回已顯示在 transcript 的 session：優先 session/resume（不重播），
+// 只有 load 可用時照常 load，但丟棄 replay history，避免重複寫入既有 transcript。
+func (b *acpBackend) ReconnectSession(id, cwd string, rt runtimeOverrides) (SessionInfo, error) {
+	return b.resumeSession(id, cwd, true)
+}
+
+func (b *acpBackend) resumeSession(id, cwd string, quiet bool) (SessionInfo, error) {
 	conn, err := b.connection()
 	if err != nil {
 		return SessionInfo{}, err
@@ -549,9 +559,9 @@ func (b *acpBackend) ResumeSession(id, cwd string, rt runtimeOverrides) (Session
 
 	method := "session/resume"
 	switch {
-	case canLoad:
+	case canLoad && !(quiet && canResume):
 		method = "session/load"
-	case !canResume:
+	case !canLoad && !canResume:
 		return SessionInfo{}, fmt.Errorf("backend %s does not support resuming sessions", b.cfg.Name)
 	}
 
@@ -584,7 +594,7 @@ func (b *acpBackend) ResumeSession(id, cwd string, rt runtimeOverrides) (Session
 	}
 	b.adopt(id, result.mode())
 	info := SessionInfo{ID: id, CWD: params["cwd"].(string), Model: result.model()}
-	if replay != nil {
+	if replay != nil && !quiet {
 		info.Turns = replay.history()
 	}
 	return info, nil
