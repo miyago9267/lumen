@@ -98,7 +98,7 @@ func (u *ui) commandModel(args string) error {
 		u.commandMessage("model override · "+u.overrides.model, green)
 		return nil
 	}
-	backend := u.be()
+	backend := u.backend
 	if backend == nil {
 		u.commandMessage("model · "+u.effectiveModel(), cyan)
 		return nil
@@ -152,7 +152,7 @@ func (u *ui) commandPermissions(args string) error {
 }
 
 func (u *ui) commandSkills() error {
-	backend := u.be()
+	backend := u.backend
 	if backend == nil {
 		u.commandMessage("skills requires app-server", yellow)
 		return nil
@@ -186,7 +186,7 @@ func (u *ui) commandSkills() error {
 }
 
 func (u *ui) commandHooks() error {
-	backend := u.be()
+	backend := u.backend
 	if backend == nil {
 		u.commandMessage("hooks requires app-server", yellow)
 		return nil
@@ -224,7 +224,7 @@ func (u *ui) commandReview(args string) error {
 	if u.busy {
 		return fmt.Errorf("review cannot start while a turn is running")
 	}
-	backend := u.be()
+	backend := u.backend
 	if backend == nil {
 		return fmt.Errorf("review requires app-server")
 	}
@@ -261,7 +261,7 @@ func (u *ui) commandRename(args string) error {
 	if name == "" {
 		return fmt.Errorf("rename expects a thread name")
 	}
-	backend := u.be()
+	backend := u.backend
 	if backend == nil {
 		u.thread.Name = name
 		u.commandMessage("thread renamed · "+name, green)
@@ -283,7 +283,7 @@ func (u *ui) commandNew(args string) error {
 	if u.busy {
 		return fmt.Errorf("new thread cannot start while a turn is running")
 	}
-	backend := u.be()
+	backend := u.backend
 	if backend == nil {
 		return fmt.Errorf("new thread requires app-server")
 	}
@@ -303,7 +303,7 @@ func (u *ui) commandArchive() error {
 	if u.busy {
 		return fmt.Errorf("archive cannot run while a turn is running")
 	}
-	backend := u.be()
+	backend := u.backend
 	if backend == nil {
 		return fmt.Errorf("archive requires app-server")
 	}
@@ -326,7 +326,7 @@ func (u *ui) commandDelete(args string) error {
 	if u.busy {
 		return fmt.Errorf("delete cannot run while a turn is running")
 	}
-	backend := u.be()
+	backend := u.backend
 	if backend == nil {
 		return fmt.Errorf("delete requires app-server")
 	}
@@ -351,7 +351,7 @@ func (u *ui) commandResume(args string) error {
 	if u.busy {
 		return fmt.Errorf("resume cannot run while a turn is running")
 	}
-	backend := u.be()
+	backend := u.backend
 	if backend == nil {
 		return fmt.Errorf("resume requires app-server")
 	}
@@ -368,7 +368,7 @@ func (u *ui) commandFork() error {
 	if u.busy {
 		return fmt.Errorf("fork cannot run while a turn is running")
 	}
-	backend := u.be()
+	backend := u.backend
 	if backend == nil {
 		return fmt.Errorf("fork requires app-server")
 	}
@@ -397,7 +397,7 @@ func (u *ui) handleScreenTurnAction(action screenTurnAction, target screenTurnTa
 		if target.id == "" {
 			return fmt.Errorf("selected turn has no fork handle")
 		}
-		backend := u.be()
+		backend := u.backend
 		if backend == nil {
 			return fmt.Errorf("fork requires app-server")
 		}
@@ -419,7 +419,7 @@ func (u *ui) commandCompact() error {
 	if u.busy {
 		return fmt.Errorf("compact cannot run while a turn is running")
 	}
-	backend := u.be()
+	backend := u.backend
 	if backend == nil {
 		return fmt.Errorf("compact requires app-server")
 	}
@@ -435,7 +435,7 @@ func (u *ui) commandCompact() error {
 }
 
 func (u *ui) commandGoal(args string) error {
-	backend := u.be()
+	backend := u.backend
 	if backend == nil {
 		u.commandMessage("goal requires app-server", yellow)
 		return nil
@@ -523,7 +523,7 @@ func (u *ui) commandStop() error {
 		u.commandMessage("no active turn", cyan)
 		return nil
 	}
-	backend := u.be()
+	backend := u.backend
 	if u.turnID == "" || backend == nil {
 		u.commandMessage("active turn has no interrupt handle", yellow)
 		return nil
@@ -536,7 +536,7 @@ func (u *ui) commandStop() error {
 }
 
 func (u *ui) commandMCP() error {
-	backend := u.be()
+	backend := u.backend
 	if backend == nil {
 		u.commandMessage("mcp requires app-server", yellow)
 		return nil
@@ -565,7 +565,7 @@ func (u *ui) commandMCP() error {
 }
 
 func (u *ui) commandApps() error {
-	backend := u.be()
+	backend := u.backend
 	if backend == nil {
 		u.commandMessage("apps requires app-server", yellow)
 		return nil
@@ -594,7 +594,7 @@ func (u *ui) commandApps() error {
 }
 
 func (u *ui) commandPlugins() error {
-	backend := u.be()
+	backend := u.backend
 	if backend == nil {
 		u.commandMessage("plugins requires app-server", yellow)
 		return nil
@@ -628,7 +628,7 @@ func (u *ui) commandPlugins() error {
 }
 
 func (u *ui) commandDebugConfig() error {
-	backend := u.be()
+	backend := u.backend
 	if backend == nil {
 		u.commandMessage("debug-config requires app-server", yellow)
 		return nil

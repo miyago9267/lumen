@@ -17,9 +17,9 @@ const (
 )
 
 type reconnectResult struct {
-	client *appServer
-	thread threadSummary
-	err    error
+	backend Backend
+	thread  threadSummary
+	err     error
 }
 
 type terminalLifecycle struct {
@@ -181,7 +181,7 @@ func canStartFreshThreadAfterResume(err error, hasTranscriptContent bool) bool {
 }
 
 func (u *ui) markConnectionLost(err error) {
-	u.client = nil
+	u.backend = nil
 	u.connectionError = connectionErrorText(err)
 	u.connectionStatusEntry = ""
 	u.reconnectAttempt = 0
@@ -222,8 +222,8 @@ func (u *ui) markReconnectFailed(err error, attempt int) {
 	u.renderPrompt()
 }
 
-func (u *ui) adoptReconnected(client *appServer, thread threadSummary) {
-	u.client = client
+func (u *ui) adoptReconnected(backend Backend, thread threadSummary) {
+	u.backend = backend
 	if thread.ID != "" {
 		u.thread = thread
 	}
@@ -299,7 +299,7 @@ func (u *ui) reconnectAsync(done <-chan struct{}) <-chan reconnectResult {
 	result := make(chan reconnectResult)
 	factory := u.serverFactory
 	if factory == nil {
-		factory = startAppServer
+		factory = startCodexBackend
 	}
 	snapshot := reconnectSnapshot{
 		threadID:             u.thread.ID,
@@ -312,8 +312,8 @@ func (u *ui) reconnectAsync(done <-chan struct{}) <-chan reconnectResult {
 		select {
 		case result <- outcome:
 		case <-done:
-			if outcome.client != nil {
-				outcome.client.Close()
+			if outcome.backend != nil {
+				outcome.backend.Close()
 			}
 		}
 	}()

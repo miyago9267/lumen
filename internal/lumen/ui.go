@@ -334,9 +334,7 @@ type screenSelection struct {
 }
 
 type ui struct {
-	// client 是 codex transport；UI 一律透過 be() 取得 Backend，不直接呼叫 client。
-	client     *appServer
-	codex      *codexBackend
+	backend    Backend
 	thread     threadSummary
 	cwd        string
 	fullscreen bool
@@ -399,12 +397,12 @@ type ui struct {
 	corallineLine         string
 	corallineSnapshot     string
 	corallineError        string
-	serverFactory         func() (*appServer, error)
+	serverFactory         func() (Backend, error)
 }
 
-func newUI(client *appServer, thread threadSummary, cwd string, fullscreen bool, overrides runtimeOverrides) *ui {
+func newUI(backend Backend, thread threadSummary, cwd string, fullscreen bool, overrides runtimeOverrides) *ui {
 	return &ui{
-		client:             client,
+		backend:            backend,
 		thread:             thread,
 		cwd:                cwd,
 		fullscreen:         fullscreen,
@@ -416,21 +414,9 @@ func newUI(client *appServer, thread threadSummary, cwd string, fullscreen bool,
 		clipboard:          writeClipboard,
 		hoverRow:           -1,
 		corallineRenderer:  newCorallineRenderer(),
-		serverFactory:      startAppServer,
+		serverFactory:      startCodexBackend,
 		expandedToolGroups: make(map[string]bool),
 	}
-}
-
-// be 回傳目前的 Backend；連線中斷（client == nil）時為 nil。
-func (u *ui) be() Backend {
-	if u.client == nil {
-		u.codex = nil
-		return nil
-	}
-	if u.codex == nil || u.codex.client != u.client {
-		u.codex = newCodexBackend(u.client, u.thread.ID)
-	}
-	return u.codex
 }
 
 func (u *ui) run(initialPrompt string) error {
@@ -450,7 +436,7 @@ func (u *ui) runInline(initialPrompt string, interactive bool) error {
 		defer lifecycle.Close()
 	}
 
-	backend := u.be()
+	backend := u.backend
 	events := backend.Events()
 
 	u.renderHeader()
@@ -795,7 +781,7 @@ func (u *ui) handleCtrlC() error {
 	message := "press Ctrl-C again to exit"
 	if u.busy {
 		message = "interrupt requested · press Ctrl-C again to exit"
-		if backend := u.be(); u.turnID != "" && backend != nil {
+		if backend := u.backend; u.turnID != "" && backend != nil {
 			u.printStatus(message, yellow)
 			return backend.Cancel(u.thread.ID, u.turnID)
 		}
@@ -970,7 +956,7 @@ func (u *ui) moveVertical(direction int) {
 }
 
 func (u *ui) submit(value string) error {
-	backend := u.be()
+	backend := u.backend
 	if backend == nil {
 		return errors.New("app-server is reconnecting; prompt was not sent")
 	}
@@ -1153,45 +1139,6 @@ func (u *ui) handleEvent(event Event) {
 	}
 }
 
-// codexShim 取得 shim 用的 codexBackend，並把 UI 目前的 thread / turn 同步給它。
-func (u *ui) codexShim() *codexBackend {
-	backend, ok := u.be().(*codexBackend)
-	if !ok {
-		backend = newCodexBackend(nil, u.thread.ID)
-	}
-	backend.setState(u.thread.ID, u.turnID)
-	return backend
-}
-
-// handleNotification、handleItemStarted、handleItemCompleted、handleServerRequest 是 codex 原始訊息的
-// 薄包裝：codex -> Event -> handleEvent，讓直接餵 codex 訊息的測試維持有效。
-func (u *ui) handleNotification(message rpcMessage) {
-	translator := codexTranslator{threadID: u.thread.ID, turnID: u.turnID}
-	for _, event := range translator.notification(message) {
-		u.handleEvent(event)
-	}
-}
-
-func (u *ui) handleItemStarted(raw json.RawMessage) {
-	translator := codexTranslator{threadID: u.thread.ID, turnID: u.turnID}
-	for _, event := range translator.itemStarted(raw) {
-		u.handleEvent(event)
-	}
-}
-
-func (u *ui) handleItemCompleted(raw json.RawMessage) {
-	translator := codexTranslator{threadID: u.thread.ID, turnID: u.turnID}
-	for _, event := range translator.itemCompleted(raw) {
-		u.handleEvent(event)
-	}
-}
-
-func (u *ui) handleServerRequest(request serverRequest) {
-	for _, event := range u.codexShim().handleRequest(request) {
-		u.handleEvent(event)
-	}
-}
-
 func (u *ui) finishTurn(status string) {
 	u.clearPrompt()
 	if !u.screenMode && (u.assistant || u.tool) {
@@ -1230,14 +1177,10 @@ func (u *ui) presentApproval(event EvApprovalRequest) {
 	for _, option := range event.Options {
 		available = append(available, option.ID)
 	}
-	u.showApprovalRequest(event.ReqID, event.Title, valueOr(event.CWD, u.cwd), event.Reason, available)
+	u.showApproval(event.ReqID, event.Title, valueOr(event.CWD, u.cwd), event.Reason, available)
 }
 
-func (u *ui) showApproval(request serverRequest, action, cwd, reason string, available []string) {
-	u.showApprovalRequest(string(request.id), action, cwd, reason, available)
-}
-
-func (u *ui) showApprovalRequest(reqID, action, cwd, reason string, available []string) {
+func (u *ui) showApproval(reqID, action, cwd, reason string, available []string) {
 	u.toolGroupBoundary++
 	u.clearPrompt()
 	u.dashboard = false
@@ -1257,7 +1200,7 @@ func (u *ui) showApprovalRequest(reqID, action, cwd, reason string, available []
 
 func (u *ui) presentInputRequest(event EvInputRequest) {
 	if len(event.Questions) == 0 {
-		if backend := u.be(); backend != nil {
+		if backend := u.backend; backend != nil {
 			_ = backend.AnswerInput(event.ReqID, map[string][]string{})
 		}
 		u.printStatus("user input request had no questions", yellow)
@@ -1306,7 +1249,7 @@ func (u *ui) handleApprovalKey(key keyEvent) error {
 		return nil
 	}
 	u.approval = nil
-	backend := u.be()
+	backend := u.backend
 	if backend == nil {
 		return errors.New("app-server unavailable")
 	}
@@ -1438,7 +1381,7 @@ func (u *ui) finishInputRequest(cancel, interrupt bool) error {
 	for id, answer := range request.answers {
 		answers[id] = answer.Answers
 	}
-	backend := u.be()
+	backend := u.backend
 	if backend == nil {
 		return errors.New("app-server unavailable")
 	}

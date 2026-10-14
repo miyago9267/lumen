@@ -391,7 +391,7 @@ func TestPendingRequestTakesPriorityOverDashboard(t *testing.T) {
 		t.Fatal("dashboard should not toggle while approval is pending")
 	}
 
-	frontend.showApproval(serverRequest{}, "run command", "/tmp/project", "reason", []string{"accept"})
+	frontend.showApproval("", "run command", "/tmp/project", "reason", []string{"accept"})
 	if frontend.dashboard {
 		t.Fatal("approval should close dashboard")
 	}
@@ -579,7 +579,7 @@ func TestCorallineDockProjectsAttentionWithoutTranscriptDuplication(t *testing.T
 			ApprovalPolicy:  "on-request",
 			Sandbox:         json.RawMessage(`{"type":"readOnly"}`),
 		},
-		client: &appServer{},
+		backend: newCodexBackend(&appServer{}, ""),
 	}
 	frontend.screenAdd(screenAssistant, "assistant answer")
 	lines := strings.Split(stripANSI(frontend.screenFrame(120, 18)), "\r\n")
@@ -616,7 +616,7 @@ func TestCorallineDockProjectsAttentionWithoutTranscriptDuplication(t *testing.T
 	}
 
 	frontend.connectionError = ""
-	frontend.client = nil
+	frontend.backend = nil
 	dock = stripANSI(frontend.screenDockLine(120))
 	if !strings.Contains(dock, "detached") || !strings.Contains(dock, "app-server unavailable") {
 		t.Fatalf("detached dock = %q", dock)
@@ -958,7 +958,7 @@ func TestSessionSupervisorPreventsDuplicateReconnects(t *testing.T) {
 	release := make(chan struct{})
 	var calls int
 	var callsMu sync.Mutex
-	supervisor := newSessionSupervisor(func() (*appServer, error) {
+	supervisor := newSessionSupervisor(func() (Backend, error) {
 		callsMu.Lock()
 		calls++
 		callsMu.Unlock()
@@ -996,7 +996,7 @@ func TestReconnectCancellationDoesNotStartFactory(t *testing.T) {
 	done := make(chan struct{})
 	close(done)
 	called := false
-	result := reconnectWithSnapshot(func() (*appServer, error) {
+	result := reconnectWithSnapshot(func() (Backend, error) {
 		called = true
 		return nil, nil
 	}, reconnectSnapshot{}, done)
@@ -1014,10 +1014,10 @@ func TestReconnectCancellationClosesLateFactoryClient(t *testing.T) {
 	release := make(chan struct{})
 	started := make(chan struct{})
 	client := newAppServer(&bufferWriteCloser{Buffer: &bytes.Buffer{}}, io.NopCloser(strings.NewReader("")), &exec.Cmd{})
-	factory := func() (*appServer, error) {
+	factory := func() (Backend, error) {
 		close(started)
 		<-release
-		return client, nil
+		return newCodexBackend(client, ""), nil
 	}
 	resultCh := make(chan reconnectResult, 1)
 	go func() {
@@ -1047,7 +1047,7 @@ func TestReconnectCancellationClosesLateFactoryClient(t *testing.T) {
 }
 
 func TestReconnectFactoryPanicBecomesError(t *testing.T) {
-	result := reconnectWithSnapshot(func() (*appServer, error) {
+	result := reconnectWithSnapshot(func() (Backend, error) {
 		panic("fixture factory panic")
 	}, reconnectSnapshot{}, nil)
 	if result.err == nil || !strings.Contains(result.err.Error(), "fixture factory panic") {
@@ -1056,7 +1056,7 @@ func TestReconnectFactoryPanicBecomesError(t *testing.T) {
 }
 
 func TestReconnectAsyncResumesCurrentThread(t *testing.T) {
-	client := nativeRPCClient(t, func(method string, _ json.RawMessage) any {
+	reconnected := nativeRPCClient(t, func(method string, _ json.RawMessage) any {
 		switch method {
 		case "thread/resume":
 			return map[string]any{
@@ -1067,17 +1067,17 @@ func TestReconnectAsyncResumesCurrentThread(t *testing.T) {
 			return map[string]any{}
 		}
 	})
+	reconnectedBackend := newCodexBackend(reconnected, "")
 	frontend := &ui{
-		client:        nil,
 		thread:        threadSummary{ID: "thread-1"},
 		cwd:           "/tmp/project",
-		serverFactory: func() (*appServer, error) { return client, nil },
+		serverFactory: func() (Backend, error) { return reconnectedBackend, nil },
 	}
 	done := make(chan struct{})
 	resultCh := frontend.reconnectAsync(done)
 	select {
 	case result := <-resultCh:
-		if result.err != nil || result.client != client || result.thread.ID != "thread-1" {
+		if result.err != nil || result.backend != Backend(reconnectedBackend) || result.thread.ID != "thread-1" {
 			t.Fatalf("reconnect result = %#v", result)
 		}
 	case <-time.After(time.Second):
@@ -1168,7 +1168,7 @@ func TestClickingTurnForkUsesTurnBoundary(t *testing.T) {
 		}
 	})
 	frontend := &ui{
-		client:     client,
+		backend:    newCodexBackend(client, ""),
 		screenMode: true,
 		cwd:        "/tmp/project",
 		thread: threadSummary{
@@ -1482,7 +1482,7 @@ func TestToolGroupStopsAtApprovalBoundary(t *testing.T) {
 	frontend := &ui{screenMode: true}
 	frontend.screenAddForTurn(screenTool, "$ before", "turn-1", "turn-1")
 	firstGroup := frontend.transcript.entries[0].toolGroup
-	frontend.showApproval(serverRequest{}, "touch x", "/tmp/project", "needs approval", []string{"accept"})
+	frontend.showApproval("", "touch x", "/tmp/project", "needs approval", []string{"accept"})
 	frontend.approval = nil
 	frontend.screenAddForTurn(screenTool, "$ after", "turn-1", "turn-1")
 
@@ -1508,7 +1508,7 @@ func TestToolGroupStopsAtUserInputBoundary(t *testing.T) {
 		screenMode: true,
 		thread:     threadSummary{ID: "thread-1"},
 		turnID:     "turn-1",
-		client:     &appServer{},
+		backend:    newCodexBackend(&appServer{}, ""),
 	}
 	frontend.beginScreenTurn("turn-1")
 	frontend.screenAdd(screenTool, "$ before")
@@ -1547,7 +1547,7 @@ func TestReconnectReplayDeduplicatesPartialTurn(t *testing.T) {
 			},
 		}},
 	}
-	frontend.adoptReconnected(client, thread)
+	frontend.adoptReconnected(newCodexBackend(client, ""), thread)
 
 	userCount, assistantCount, toolCount := 0, 0, 0
 	firstErrorIndex := len(frontend.transcript.entries)
@@ -1818,11 +1818,11 @@ func TestApprovalRequestRoundTrip(t *testing.T) {
 	var uiOutput bytes.Buffer
 	client := newAppServer(&bufferWriteCloser{Buffer: &rpcOutput}, io.NopCloser(strings.NewReader("")), &exec.Cmd{})
 	frontend := &ui{
-		client: client,
-		thread: threadSummary{ID: "thread-1"},
-		cwd:    "/tmp/project",
-		busy:   true,
-		out:    &uiOutput,
+		backend: newCodexBackend(client, ""),
+		thread:  threadSummary{ID: "thread-1"},
+		cwd:     "/tmp/project",
+		busy:    true,
+		out:     &uiOutput,
 	}
 	frontend.handleServerRequest(serverRequest{
 		id:     json.RawMessage("3"),
@@ -1851,7 +1851,7 @@ func TestApprovalRequestRoundTrip(t *testing.T) {
 func TestPermissionRequestFailsClosed(t *testing.T) {
 	var rpcOutput bytes.Buffer
 	frontend := &ui{
-		client:     newAppServer(&bufferWriteCloser{Buffer: &rpcOutput}, io.NopCloser(strings.NewReader("")), &exec.Cmd{}),
+		backend:    newCodexBackend(newAppServer(&bufferWriteCloser{Buffer: &rpcOutput}, io.NopCloser(strings.NewReader("")), &exec.Cmd{}), ""),
 		thread:     threadSummary{ID: "thread-1"},
 		screenMode: true,
 		cwd:        "/tmp/project",
@@ -1884,7 +1884,7 @@ func TestPermissionRequestFailsClosed(t *testing.T) {
 func TestToolRequestUserInputRoundTrip(t *testing.T) {
 	var rpcOutput bytes.Buffer
 	frontend := &ui{
-		client:     newAppServer(&bufferWriteCloser{Buffer: &rpcOutput}, io.NopCloser(strings.NewReader("")), &exec.Cmd{}),
+		backend:    newCodexBackend(newAppServer(&bufferWriteCloser{Buffer: &rpcOutput}, io.NopCloser(strings.NewReader("")), &exec.Cmd{}), ""),
 		thread:     threadSummary{ID: "thread-1"},
 		turnID:     "turn-1",
 		busy:       true,
@@ -1937,7 +1937,7 @@ func TestToolRequestUserInputRoundTrip(t *testing.T) {
 func TestToolRequestUserInputNavigatesOptionsAndOther(t *testing.T) {
 	var rpcOutput bytes.Buffer
 	frontend := &ui{
-		client:     newAppServer(&bufferWriteCloser{Buffer: &rpcOutput}, io.NopCloser(strings.NewReader("")), &exec.Cmd{}),
+		backend:    newCodexBackend(newAppServer(&bufferWriteCloser{Buffer: &rpcOutput}, io.NopCloser(strings.NewReader("")), &exec.Cmd{}), ""),
 		thread:     threadSummary{ID: "thread-1"},
 		turnID:     "turn-1",
 		busy:       true,
@@ -1989,7 +1989,7 @@ func TestToolRequestUserInputNavigatesOptionsAndOther(t *testing.T) {
 func TestToolRequestUserInputSubmitsSelectedOption(t *testing.T) {
 	var rpcOutput bytes.Buffer
 	frontend := &ui{
-		client:     newAppServer(&bufferWriteCloser{Buffer: &rpcOutput}, io.NopCloser(strings.NewReader("")), &exec.Cmd{}),
+		backend:    newCodexBackend(newAppServer(&bufferWriteCloser{Buffer: &rpcOutput}, io.NopCloser(strings.NewReader("")), &exec.Cmd{}), ""),
 		thread:     threadSummary{ID: "thread-1"},
 		turnID:     "turn-1",
 		busy:       true,
@@ -2069,7 +2069,7 @@ func TestSecretUserInputIsMasked(t *testing.T) {
 func TestMismatchedServerRequestIsVisibleAndRejected(t *testing.T) {
 	var rpcOutput bytes.Buffer
 	frontend := &ui{
-		client:     newAppServer(&bufferWriteCloser{Buffer: &rpcOutput}, io.NopCloser(strings.NewReader("")), &exec.Cmd{}),
+		backend:    newCodexBackend(newAppServer(&bufferWriteCloser{Buffer: &rpcOutput}, io.NopCloser(strings.NewReader("")), &exec.Cmd{}), ""),
 		thread:     threadSummary{ID: "thread-1"},
 		screenMode: true,
 	}

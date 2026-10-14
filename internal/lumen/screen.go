@@ -57,7 +57,7 @@ func (u *ui) runFullscreen(initialPrompt string) error {
 	}
 	defer lifecycle.Close()
 	defer func() {
-		if backend := u.be(); backend != nil {
+		if backend := u.backend; backend != nil {
 			backend.Close()
 		}
 	}()
@@ -126,7 +126,7 @@ func (u *ui) runFullscreen(initialPrompt string) error {
 		}
 	}()
 	handleDisconnect := func(backend Backend, cause error) {
-		if backend == nil || u.be() != backend {
+		if backend == nil || u.backend != backend {
 			return
 		}
 		if cause == nil {
@@ -139,7 +139,7 @@ func (u *ui) runFullscreen(initialPrompt string) error {
 		invalidate()
 	}
 	if initialPrompt != "" {
-		initialBackend := u.be()
+		initialBackend := u.backend
 		if err := u.submit(initialPrompt); err != nil {
 			u.input = []rune(initialPrompt)
 			u.cursor = len(u.input)
@@ -163,7 +163,7 @@ func (u *ui) runFullscreen(initialPrompt string) error {
 	dirty = false
 
 	for {
-		backend := u.be()
+		backend := u.backend
 		var events <-chan Event
 		if backend != nil {
 			events = backend.Events()
@@ -202,13 +202,13 @@ func (u *ui) runFullscreen(initialPrompt string) error {
 				u.markReconnectFailed(result.err, reconnectAttempt)
 				scheduleReconnect()
 				invalidate()
-			} else if result.client == nil {
+			} else if result.backend == nil {
 				reconnectAttempt++
 				u.markReconnectFailed(errors.New("reconnect returned no app-server"), reconnectAttempt)
 				scheduleReconnect()
 				invalidate()
 			} else {
-				u.adoptReconnected(result.client, result.thread)
+				u.adoptReconnected(result.backend, result.thread)
 				reconnectAttempt = 0
 				invalidate()
 			}
@@ -216,7 +216,7 @@ func (u *ui) runFullscreen(initialPrompt string) error {
 			retryResults = nil
 			u.reconnectRetryPending = false
 			invalidate()
-			if u.be() == nil {
+			if u.backend == nil {
 				startReconnect()
 			}
 		case <-renderWake:
@@ -769,7 +769,7 @@ func (u *ui) screenStatusLabel() string {
 		}
 	} else if u.replyTarget.key != "" {
 		label = fmt.Sprintf("ask about turn %d · type follow-up", u.replyTarget.ordinal)
-	} else if u.be() == nil {
+	} else if u.backend == nil {
 		label = "detached · app-server unavailable"
 	} else {
 		label = fmt.Sprintf("%s (%s) · %s", u.effectiveModel(), u.effectiveEffort(), u.effectiveApproval())

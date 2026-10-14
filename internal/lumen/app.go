@@ -1,6 +1,7 @@
 package lumen
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -60,12 +61,12 @@ func Run(args []string) int {
 		return 2
 	}
 
-	client, err := startAppServer()
+	backend, err := startCodexBackend()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%s: %v\n", appName, err)
 		return 1
 	}
-	defer client.Close()
+	defer backend.Close()
 
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -73,12 +74,12 @@ func Run(args []string) int {
 		return 1
 	}
 
-	if err := client.Initialize(); err != nil {
+	if err := backend.Open(context.Background()); err != nil {
 		fmt.Fprintf(os.Stderr, "%s: initialize app-server: %v\n", appName, err)
 		return 1
 	}
 
-	thread, err := openThread(client, cwd, opts)
+	thread, err := openThread(backend, cwd, opts)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%s: open thread: %v\n", appName, err)
 		return 1
@@ -88,7 +89,7 @@ func Run(args []string) int {
 	if threadCWD == "" {
 		threadCWD = cwd
 	}
-	ui := newUI(client, thread, threadCWD, opts.fullscreen, opts.runtime)
+	ui := newUI(backend, thread, threadCWD, opts.fullscreen, opts.runtime)
 	if err := ui.run(opts.prompt); err != nil {
 		fmt.Fprintf(os.Stderr, "%s: %v\n", appName, err)
 		return 1
@@ -200,21 +201,30 @@ type historyInput struct {
 	Text string `json:"text"`
 }
 
-func openThread(client *appServer, cwd string, opts options) (threadSummary, error) {
+func openThread(backend Backend, cwd string, opts options) (SessionInfo, error) {
 	if opts.resume != "" {
-		return client.ResumeThread(opts.resume, opts.runtime)
+		return backend.ResumeSession(opts.resume, cwd, opts.runtime)
 	}
 	if opts.continue_ {
-		threads, err := client.ListThreads(cwd, 1)
+		threads, err := backend.ListSessions(cwd, 1)
 		if err != nil {
-			return threadSummary{}, err
+			return SessionInfo{}, err
 		}
 		if len(threads) == 0 {
-			return client.StartThread(cwd, opts.runtime)
+			return backend.NewSession(cwd, opts.runtime)
 		}
-		return client.ResumeThread(threads[0].ID, opts.runtime)
+		return backend.ResumeSession(threads[0].ID, cwd, opts.runtime)
 	}
-	return client.StartThread(cwd, opts.runtime)
+	return backend.NewSession(cwd, opts.runtime)
+}
+
+// startCodexBackend 啟動 codex app-server 並包成 Backend；尚未 Open。
+func startCodexBackend() (Backend, error) {
+	client, err := startAppServer()
+	if err != nil {
+		return nil, err
+	}
+	return newCodexBackend(client, ""), nil
 }
 
 func startAppServer() (*appServer, error) {

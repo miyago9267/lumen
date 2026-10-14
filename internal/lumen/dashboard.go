@@ -33,7 +33,7 @@ func (u *ui) openDashboard() error {
 }
 
 func (u *ui) refreshDashboard() error {
-	backend := u.be()
+	backend := u.backend
 	if backend == nil {
 		u.dashboardRows = []threadSummary{u.thread}
 		return nil
@@ -137,7 +137,7 @@ func (u *ui) attachDashboard(index int) error {
 		u.dashboardError = ""
 		return nil
 	}
-	backend := u.be()
+	backend := u.backend
 	if backend == nil {
 		return fmt.Errorf("session attach requires app-server")
 	}
@@ -173,7 +173,7 @@ func (u *ui) startDashboardSession() error {
 		u.dashboardError = "active turn still running · start after it completes"
 		return nil
 	}
-	backend := u.be()
+	backend := u.backend
 	if backend == nil {
 		u.dashboardError = "new session requires app-server"
 		return nil

@@ -17,7 +17,7 @@ type reconnectSnapshot struct {
 }
 
 type sessionSupervisor struct {
-	factory func() (*appServer, error)
+	factory func() (Backend, error)
 	done    chan struct{}
 	results chan reconnectResult
 
@@ -27,9 +27,9 @@ type sessionSupervisor struct {
 	closed    bool
 }
 
-func newSessionSupervisor(factory func() (*appServer, error)) *sessionSupervisor {
+func newSessionSupervisor(factory func() (Backend, error)) *sessionSupervisor {
 	if factory == nil {
-		factory = startAppServer
+		factory = startCodexBackend
 	}
 	return &sessionSupervisor{
 		factory: factory,
@@ -61,8 +61,8 @@ func (s *sessionSupervisor) Start(snapshot reconnectSnapshot) bool {
 		select {
 		case s.results <- result:
 		case <-s.done:
-			if result.client != nil {
-				result.client.Close()
+			if result.backend != nil {
+				result.backend.Close()
 			}
 		}
 	}()
@@ -78,13 +78,13 @@ func (s *sessionSupervisor) Close() {
 	})
 }
 
-func reconnectWithSnapshot(factory func() (*appServer, error), snapshot reconnectSnapshot, done <-chan struct{}) reconnectResult {
+func reconnectWithSnapshot(factory func() (Backend, error), snapshot reconnectSnapshot, done <-chan struct{}) reconnectResult {
 	if reconnectDone(done) {
 		return reconnectResult{err: errReconnectCancelled}
 	}
 	type factoryResult struct {
-		client *appServer
-		err    error
+		backend Backend
+		err     error
 	}
 	factoryResults := make(chan factoryResult)
 	go func() {
@@ -95,13 +95,13 @@ func reconnectWithSnapshot(factory func() (*appServer, error), snapshot reconnec
 					result.err = fmt.Errorf("reconnect factory panic: %v", value)
 				}
 			}()
-			result.client, result.err = factory()
+			result.backend, result.err = factory()
 		}()
 		select {
 		case factoryResults <- result:
 		case <-done:
-			if result.client != nil {
-				result.client.Close()
+			if result.backend != nil {
+				result.backend.Close()
 			}
 		}
 	}()
@@ -111,14 +111,12 @@ func reconnectWithSnapshot(factory func() (*appServer, error), snapshot reconnec
 	case <-done:
 		return reconnectResult{err: errReconnectCancelled}
 	}
-	client, err := outcome.client, outcome.err
-	if err == nil && client == nil {
+	backend, err := outcome.backend, outcome.err
+	if err == nil && backend == nil {
 		err = errors.New("reconnect factory returned nil app-server")
 	}
 	// 重連流程只透過 Backend interface：Open -> ResumeSession -> （必要時）NewSession。
-	var backend Backend
 	if err == nil {
-		backend = newCodexBackend(client, snapshot.threadID)
 		err = reconnectCall(done, func() error { return backend.Open(context.Background()) })
 	}
 	var thread threadSummary
@@ -138,13 +136,13 @@ func reconnectWithSnapshot(factory func() (*appServer, error), snapshot reconnec
 			})
 		}
 	}
-	if err != nil && client != nil {
-		client.Close()
+	if err != nil && backend != nil {
+		backend.Close()
 	}
-	result := reconnectResult{client: client, thread: thread, err: err}
+	result := reconnectResult{backend: backend, thread: thread, err: err}
 	if reconnectDone(done) {
-		if result.client != nil {
-			result.client.Close()
+		if result.backend != nil {
+			result.backend.Close()
 		}
 		return reconnectResult{err: errReconnectCancelled}
 	}

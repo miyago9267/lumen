@@ -127,7 +127,7 @@ func TestDashboardAttachesCrossSessionHistory(t *testing.T) {
 		}
 	})
 	frontend := &ui{
-		client:     client,
+		backend:    newCodexBackend(client, ""),
 		screenMode: true,
 		cwd:        "/tmp/project",
 		thread:     threadSummary{ID: "thread-current"},
@@ -164,7 +164,7 @@ func TestNativeModelCommandUsesAppServer(t *testing.T) {
 		return map[string]any{"data": []map[string]any{{"id": "gpt-test", "displayName": "GPT Test"}}}
 	})
 	frontend := &ui{
-		client:     client,
+		backend:    newCodexBackend(client, ""),
 		screenMode: true,
 		thread:     threadSummary{ID: "thread-1"},
 		cwd:        "/tmp/project",
@@ -187,7 +187,7 @@ func TestNativeReviewCommandStartsInlineReview(t *testing.T) {
 		return map[string]any{"reviewThreadId": "thread-1", "turn": map[string]string{"id": "review-turn"}}
 	})
 	frontend := &ui{
-		client:     client,
+		backend:    newCodexBackend(client, ""),
 		screenMode: true,
 		thread:     threadSummary{ID: "thread-1"},
 		cwd:        "/tmp/project",
