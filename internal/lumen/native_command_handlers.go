@@ -98,11 +98,16 @@ func (u *ui) commandModel(args string) error {
 		u.commandMessage("model override · "+u.overrides.model, green)
 		return nil
 	}
-	if u.client == nil {
+	backend := u.be()
+	if backend == nil {
 		u.commandMessage("model · "+u.effectiveModel(), cyan)
 		return nil
 	}
-	models, err := u.client.ListModels()
+	extras, ok := u.codexExtras(backend, "model", backend.Caps().ModelList)
+	if !ok {
+		return nil
+	}
+	models, err := extras.ListModels()
 	if err != nil {
 		return err
 	}
@@ -147,11 +152,16 @@ func (u *ui) commandPermissions(args string) error {
 }
 
 func (u *ui) commandSkills() error {
-	if u.client == nil {
+	backend := u.be()
+	if backend == nil {
 		u.commandMessage("skills requires app-server", yellow)
 		return nil
 	}
-	entries, err := u.client.ListSkills(u.cwd)
+	extras, ok := u.codexExtras(backend, "skills", backend.Caps().NativeAdmin)
+	if !ok {
+		return nil
+	}
+	entries, err := extras.ListSkills(u.cwd)
 	if err != nil {
 		return err
 	}
@@ -176,11 +186,16 @@ func (u *ui) commandSkills() error {
 }
 
 func (u *ui) commandHooks() error {
-	if u.client == nil {
+	backend := u.be()
+	if backend == nil {
 		u.commandMessage("hooks requires app-server", yellow)
 		return nil
 	}
-	entries, err := u.client.ListHooks(u.cwd)
+	extras, ok := u.codexExtras(backend, "hooks", backend.Caps().NativeAdmin)
+	if !ok {
+		return nil
+	}
+	entries, err := extras.ListHooks(u.cwd)
 	if err != nil {
 		return err
 	}
@@ -209,8 +224,13 @@ func (u *ui) commandReview(args string) error {
 	if u.busy {
 		return fmt.Errorf("review cannot start while a turn is running")
 	}
-	if u.client == nil {
+	backend := u.be()
+	if backend == nil {
 		return fmt.Errorf("review requires app-server")
+	}
+	extras, ok := u.codexExtras(backend, "review", backend.Caps().Review)
+	if !ok {
+		return nil
 	}
 	target := map[string]any{"type": "uncommittedChanges"}
 	args = strings.TrimSpace(args)
@@ -226,7 +246,7 @@ func (u *ui) commandReview(args string) error {
 	case args != "":
 		target = map[string]any{"type": "custom", "instructions": args}
 	}
-	turnID, err := u.client.StartReview(u.thread.ID, target)
+	turnID, err := extras.Review(u.thread.ID, target)
 	if err != nil {
 		return err
 	}
@@ -241,12 +261,17 @@ func (u *ui) commandRename(args string) error {
 	if name == "" {
 		return fmt.Errorf("rename expects a thread name")
 	}
-	if u.client == nil {
+	backend := u.be()
+	if backend == nil {
 		u.thread.Name = name
 		u.commandMessage("thread renamed · "+name, green)
 		return nil
 	}
-	if err := u.client.SetThreadName(u.thread.ID, name); err != nil {
+	extras, ok := u.codexExtras(backend, "rename", backend.Caps().Rename)
+	if !ok {
+		return nil
+	}
+	if err := extras.Rename(u.thread.ID, name); err != nil {
 		return err
 	}
 	u.thread.Name = name
@@ -258,10 +283,11 @@ func (u *ui) commandNew(args string) error {
 	if u.busy {
 		return fmt.Errorf("new thread cannot start while a turn is running")
 	}
-	if u.client == nil {
+	backend := u.be()
+	if backend == nil {
 		return fmt.Errorf("new thread requires app-server")
 	}
-	thread, err := u.client.StartThread(u.cwd, u.overrides)
+	thread, err := backend.NewSession(u.cwd, u.overrides)
 	if err != nil {
 		return err
 	}
@@ -277,10 +303,15 @@ func (u *ui) commandArchive() error {
 	if u.busy {
 		return fmt.Errorf("archive cannot run while a turn is running")
 	}
-	if u.client == nil {
+	backend := u.be()
+	if backend == nil {
 		return fmt.Errorf("archive requires app-server")
 	}
-	if err := u.client.ArchiveThread(u.thread.ID); err != nil {
+	extras, ok := u.codexExtras(backend, "archive", backend.Caps().Archive)
+	if !ok {
+		return nil
+	}
+	if err := extras.Archive(u.thread.ID); err != nil {
 		return err
 	}
 	u.commandMessage("thread archived · "+shortID(u.thread.ID), green)
@@ -295,10 +326,15 @@ func (u *ui) commandDelete(args string) error {
 	if u.busy {
 		return fmt.Errorf("delete cannot run while a turn is running")
 	}
-	if u.client == nil {
+	backend := u.be()
+	if backend == nil {
 		return fmt.Errorf("delete requires app-server")
 	}
-	if err := u.client.DeleteThread(u.thread.ID); err != nil {
+	extras, ok := u.codexExtras(backend, "delete", backend.Caps().Delete)
+	if !ok {
+		return nil
+	}
+	if err := extras.Delete(u.thread.ID); err != nil {
 		return err
 	}
 	return errQuit
@@ -315,10 +351,11 @@ func (u *ui) commandResume(args string) error {
 	if u.busy {
 		return fmt.Errorf("resume cannot run while a turn is running")
 	}
-	if u.client == nil {
+	backend := u.be()
+	if backend == nil {
 		return fmt.Errorf("resume requires app-server")
 	}
-	thread, err := u.client.ResumeThread(strings.Fields(threadID)[0], u.overrides)
+	thread, err := backend.ResumeSession(strings.Fields(threadID)[0], u.cwd, u.overrides)
 	if err != nil {
 		return err
 	}
@@ -331,10 +368,15 @@ func (u *ui) commandFork() error {
 	if u.busy {
 		return fmt.Errorf("fork cannot run while a turn is running")
 	}
-	if u.client == nil {
+	backend := u.be()
+	if backend == nil {
 		return fmt.Errorf("fork requires app-server")
 	}
-	thread, err := u.client.ForkThread(u.thread.ID, u.overrides)
+	extras, ok := u.codexExtras(backend, "fork", backend.Caps().ForkAtTurn)
+	if !ok {
+		return nil
+	}
+	thread, err := extras.Fork(u.thread.ID, u.overrides)
 	if err != nil {
 		return err
 	}
@@ -355,10 +397,15 @@ func (u *ui) handleScreenTurnAction(action screenTurnAction, target screenTurnTa
 		if target.id == "" {
 			return fmt.Errorf("selected turn has no fork handle")
 		}
-		if u.client == nil {
+		backend := u.be()
+		if backend == nil {
 			return fmt.Errorf("fork requires app-server")
 		}
-		thread, err := u.client.ForkThreadAt(u.thread.ID, target.id, u.overrides)
+		extras, ok := u.codexExtras(backend, "fork", backend.Caps().ForkAtTurn)
+		if !ok {
+			return nil
+		}
+		thread, err := extras.ForkAt(u.thread.ID, target.id, u.overrides)
 		if err != nil {
 			return err
 		}
@@ -372,10 +419,15 @@ func (u *ui) commandCompact() error {
 	if u.busy {
 		return fmt.Errorf("compact cannot run while a turn is running")
 	}
-	if u.client == nil {
+	backend := u.be()
+	if backend == nil {
 		return fmt.Errorf("compact requires app-server")
 	}
-	if err := u.client.CompactThread(u.thread.ID); err != nil {
+	extras, ok := u.codexExtras(backend, "compact", backend.Caps().Compact)
+	if !ok {
+		return nil
+	}
+	if err := extras.Compact(u.thread.ID); err != nil {
 		return err
 	}
 	u.commandMessage("compaction started", cyan)
@@ -383,20 +435,25 @@ func (u *ui) commandCompact() error {
 }
 
 func (u *ui) commandGoal(args string) error {
-	if u.client == nil {
+	backend := u.be()
+	if backend == nil {
 		u.commandMessage("goal requires app-server", yellow)
+		return nil
+	}
+	extras, ok := u.codexExtras(backend, "goal", backend.Caps().Goal)
+	if !ok {
 		return nil
 	}
 	args = strings.TrimSpace(args)
 	if strings.EqualFold(args, "clear") {
-		if err := u.client.ClearThreadGoal(u.thread.ID); err != nil {
+		if err := extras.ClearGoal(u.thread.ID); err != nil {
 			return err
 		}
 		u.commandMessage("goal cleared", green)
 		return nil
 	}
 	if args == "" {
-		goal, err := u.client.GetThreadGoal(u.thread.ID)
+		goal, err := extras.Goal(u.thread.ID)
 		if err != nil {
 			return err
 		}
@@ -410,7 +467,7 @@ func (u *ui) commandGoal(args string) error {
 		})
 		return nil
 	}
-	goal, err := u.client.SetThreadGoal(u.thread.ID, args)
+	goal, err := extras.SetGoal(u.thread.ID, args)
 	if err != nil {
 		return err
 	}
@@ -466,11 +523,12 @@ func (u *ui) commandStop() error {
 		u.commandMessage("no active turn", cyan)
 		return nil
 	}
-	if u.turnID == "" || u.client == nil {
+	backend := u.be()
+	if u.turnID == "" || backend == nil {
 		u.commandMessage("active turn has no interrupt handle", yellow)
 		return nil
 	}
-	if err := u.client.Interrupt(u.thread.ID, u.turnID); err != nil {
+	if err := backend.Cancel(u.thread.ID, u.turnID); err != nil {
 		return err
 	}
 	u.commandMessage("interrupt requested", yellow)
@@ -478,11 +536,16 @@ func (u *ui) commandStop() error {
 }
 
 func (u *ui) commandMCP() error {
-	if u.client == nil {
+	backend := u.be()
+	if backend == nil {
 		u.commandMessage("mcp requires app-server", yellow)
 		return nil
 	}
-	servers, err := u.client.ListMCPServers(u.thread.ID)
+	extras, ok := u.codexExtras(backend, "mcp", backend.Caps().NativeAdmin)
+	if !ok {
+		return nil
+	}
+	servers, err := extras.ListMCPServers(u.thread.ID)
 	if err != nil {
 		return err
 	}
@@ -502,11 +565,16 @@ func (u *ui) commandMCP() error {
 }
 
 func (u *ui) commandApps() error {
-	if u.client == nil {
+	backend := u.be()
+	if backend == nil {
 		u.commandMessage("apps requires app-server", yellow)
 		return nil
 	}
-	apps, err := u.client.ListApps()
+	extras, ok := u.codexExtras(backend, "apps", backend.Caps().NativeAdmin)
+	if !ok {
+		return nil
+	}
+	apps, err := extras.ListApps()
 	if err != nil {
 		return err
 	}
@@ -526,11 +594,16 @@ func (u *ui) commandApps() error {
 }
 
 func (u *ui) commandPlugins() error {
-	if u.client == nil {
+	backend := u.be()
+	if backend == nil {
 		u.commandMessage("plugins requires app-server", yellow)
 		return nil
 	}
-	marketplaces, err := u.client.ListPlugins(u.cwd)
+	extras, ok := u.codexExtras(backend, "plugins", backend.Caps().NativeAdmin)
+	if !ok {
+		return nil
+	}
+	marketplaces, err := extras.ListPlugins(u.cwd)
 	if err != nil {
 		return err
 	}
@@ -555,15 +628,20 @@ func (u *ui) commandPlugins() error {
 }
 
 func (u *ui) commandDebugConfig() error {
-	if u.client == nil {
+	backend := u.be()
+	if backend == nil {
 		u.commandMessage("debug-config requires app-server", yellow)
+		return nil
+	}
+	extras, ok := u.codexExtras(backend, "debug-config", backend.Caps().NativeAdmin)
+	if !ok {
 		return nil
 	}
 	var result struct {
 		Origins map[string]json.RawMessage `json:"origins"`
 		Layers  []json.RawMessage          `json:"layers"`
 	}
-	if err := u.client.Call("config/read", map[string]any{
+	if err := extras.Call("config/read", map[string]any{
 		"cwd":           u.cwd,
 		"includeLayers": true,
 	}, &result); err != nil {
@@ -575,6 +653,16 @@ func (u *ui) commandDebugConfig() error {
 		fmt.Sprintf("layers · %d", len(result.Layers)),
 	})
 	return nil
+}
+
+// codexExtras 取得 backend 的 Codex 專屬功能；capability 為 false 時印出 fallback 並回傳 false。
+func (u *ui) codexExtras(backend Backend, command string, supported bool) (CodexExtras, bool) {
+	extras, ok := backend.(CodexExtras)
+	if !supported || !ok {
+		u.commandMessage("/"+command+" is not supported by backend "+backend.Name(), muted)
+		return nil, false
+	}
+	return extras, true
 }
 
 func (u *ui) beginCommandTurn(turnID string) {

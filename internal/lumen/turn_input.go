@@ -50,10 +50,11 @@ func (u *ui) cancelAndSendPrompt() error {
 	if u.turnID == "" {
 		return nil
 	}
-	if u.client == nil {
+	backend := u.be()
+	if backend == nil {
 		return fmt.Errorf("cancel-and-send requires app-server")
 	}
-	return u.client.Interrupt(u.thread.ID, u.turnID)
+	return backend.Cancel(u.thread.ID, u.turnID)
 }
 
 func (u *ui) rejectAsidePrompt() error {
@@ -78,7 +79,7 @@ func (u *ui) startNextPrompt() {
 	if value == "" {
 		return
 	}
-	if u.client == nil {
+	if u.be() == nil {
 		u.printError(fmt.Errorf("queued prompt requires app-server"))
 		return
 	}

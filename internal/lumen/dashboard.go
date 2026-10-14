@@ -33,11 +33,12 @@ func (u *ui) openDashboard() error {
 }
 
 func (u *ui) refreshDashboard() error {
-	if u.client == nil {
+	backend := u.be()
+	if backend == nil {
 		u.dashboardRows = []threadSummary{u.thread}
 		return nil
 	}
-	threads, err := u.client.ListThreads("", maxDashboardSessions)
+	threads, err := backend.ListSessions("", maxDashboardSessions)
 	if err != nil {
 		return fmt.Errorf("list sessions: %w", err)
 	}
@@ -136,10 +137,11 @@ func (u *ui) attachDashboard(index int) error {
 		u.dashboardError = ""
 		return nil
 	}
-	if u.client == nil {
+	backend := u.be()
+	if backend == nil {
 		return fmt.Errorf("session attach requires app-server")
 	}
-	resumed, err := u.client.ResumeThread(thread.ID, u.overrides)
+	resumed, err := backend.ResumeSession(thread.ID, u.cwd, u.overrides)
 	if err != nil {
 		u.dashboardError = "attach failed · " + err.Error()
 		return nil
@@ -171,11 +173,12 @@ func (u *ui) startDashboardSession() error {
 		u.dashboardError = "active turn still running · start after it completes"
 		return nil
 	}
-	if u.client == nil {
+	backend := u.be()
+	if backend == nil {
 		u.dashboardError = "new session requires app-server"
 		return nil
 	}
-	thread, err := u.client.StartThread(u.cwd, u.overrides)
+	thread, err := backend.NewSession(u.cwd, u.overrides)
 	if err != nil {
 		u.dashboardError = "new session failed · " + err.Error()
 		return nil
