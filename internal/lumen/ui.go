@@ -1138,18 +1138,6 @@ func (u *ui) handleNotification(message rpcMessage) {
 	}
 }
 
-func compactWarning(message string) string {
-	const prefix = "Under-development features enabled: "
-	if !strings.HasPrefix(message, prefix) {
-		return message
-	}
-	features := strings.TrimSpace(strings.SplitN(strings.TrimPrefix(message, prefix), ".", 2)[0])
-	if features == "" {
-		return "Codex warning: unstable features active"
-	}
-	return "Codex warning: unstable features active (" + features + ")"
-}
-
 func (u *ui) handleItemStarted(raw json.RawMessage) {
 	var params struct {
 		ThreadID string         `json:"threadId"`
