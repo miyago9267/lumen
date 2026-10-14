@@ -3,6 +3,7 @@ package lumen
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 type approvalRecorder struct {
@@ -29,11 +30,13 @@ func explicitApproval() EvApprovalRequest {
 // T-P2-21：explicit approval 沒有預設選項；Enter 不得放行，只有明確按鍵才回覆。
 func TestExplicitApprovalHasNoDefaultFocus(t *testing.T) {
 	backend := &approvalRecorder{}
-	frontend := &ui{screenMode: true, backend: backend}
+	clock := &fakeClock{now: time.Unix(1000, 0)}
+	frontend := &ui{screenMode: true, backend: backend, clock: clock.Now}
 	frontend.handleEvent(explicitApproval())
 	if frontend.approval == nil {
 		t.Fatal("approval card not shown")
 	}
+	clock.now = clock.now.Add(time.Second)
 	if err := frontend.handleKey(keyEvent{typ: keyEnter}); err != nil {
 		t.Fatal(err)
 	}
@@ -113,5 +116,47 @@ func TestApprovalExpiredIgnoresOtherRequest(t *testing.T) {
 	frontend.handleEvent(EvApprovalExpired{ReqID: "7", Text: "permission request timed out · cancelled"})
 	if frontend.approval == nil {
 		t.Fatal("unrelated expiry cleared the current approval")
+	}
+}
+
+type fakeClock struct{ now time.Time }
+
+func (c *fakeClock) Now() time.Time { return c.now }
+
+// verifier follow-up：card 出現後短時間內的數字鍵視為 typeahead，不得選 option；超過視窗後才生效。
+func TestExplicitApprovalIgnoresEarlyDigits(t *testing.T) {
+	backend := &approvalRecorder{}
+	clock := &fakeClock{now: time.Unix(1000, 0)}
+	frontend := &ui{screenMode: true, backend: backend, clock: clock.Now}
+	frontend.handleEvent(explicitApproval())
+
+	clock.now = clock.now.Add(approvalTypeaheadGuard - time.Millisecond)
+	if err := frontend.handleKey(keyEvent{typ: keyRune, rune: '1'}); err != nil {
+		t.Fatal(err)
+	}
+	if len(backend.resolved) != 0 || frontend.approval == nil {
+		t.Fatalf("early digit selected an option: %v", backend.resolved)
+	}
+
+	clock.now = clock.now.Add(2 * time.Millisecond)
+	if err := frontend.handleKey(keyEvent{typ: keyRune, rune: '1'}); err != nil {
+		t.Fatal(err)
+	}
+	if len(backend.resolved) != 1 || backend.resolved[0] != [2]string{"0", "allow-once"} {
+		t.Fatalf("digit after the guard window did not select: %v", backend.resolved)
+	}
+}
+
+// 取消是安全方向，不受 typeahead 視窗限制。
+func TestExplicitApprovalCancelNotGuarded(t *testing.T) {
+	backend := &approvalRecorder{}
+	clock := &fakeClock{now: time.Unix(1000, 0)}
+	frontend := &ui{screenMode: true, backend: backend, clock: clock.Now}
+	frontend.handleEvent(explicitApproval())
+	if err := frontend.handleKey(keyEvent{typ: keyEscape}); err != nil {
+		t.Fatal(err)
+	}
+	if len(backend.resolved) != 1 || backend.resolved[0][1] != CancelApprovalID {
+		t.Fatalf("resolved = %v", backend.resolved)
 	}
 }

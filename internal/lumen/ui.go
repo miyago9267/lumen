@@ -277,6 +277,8 @@ type approvalRequest struct {
 	reason    string
 	// options 非 nil 時為 explicit 模式：沒有預設選項，只能用數字鍵選或取消。
 	options []ApprovalOption
+	// shownAt 是 card 出現的時間，供 explicit 模式的 typeahead 保護使用。
+	shownAt time.Time
 }
 
 func (a *approvalRequest) hint() string {
@@ -416,6 +418,7 @@ type ui struct {
 	corallineSnapshot     string
 	corallineError        string
 	serverFactory         func() (Backend, error)
+	clock                 func() time.Time // nil 使用 time.Now；測試注入
 }
 
 func newUI(backend Backend, thread threadSummary, cwd string, fullscreen bool, overrides runtimeOverrides) *ui {
@@ -1228,7 +1231,7 @@ func (u *ui) showApprovalRequest(reqID, action, cwd, reason string, available []
 	u.clearPrompt()
 	u.dashboard = false
 	u.dashboardError = ""
-	u.approval = &approvalRequest{id: reqID, available: available, action: action, cwd: cwd, reason: reason, options: options}
+	u.approval = &approvalRequest{id: reqID, available: available, action: action, cwd: cwd, reason: reason, options: options, shownAt: u.now()}
 	if u.screenMode {
 		return
 	}
@@ -1265,6 +1268,17 @@ func (u *ui) presentInputRequest(event EvInputRequest) {
 	u.renderPrompt()
 }
 
+// approvalTypeaheadGuard 是 explicit approval card 出現後忽略數字鍵的時間：
+// 使用者在 card 出現前已打下的數字（typeahead）不得因此選到 allow_*。取消鍵不受限制。
+const approvalTypeaheadGuard = 400 * time.Millisecond
+
+func (u *ui) now() time.Time {
+	if u.clock != nil {
+		return u.clock()
+	}
+	return time.Now()
+}
+
 // handleExplicitApprovalKey 處理沒有預設選項的 approval（ACP）：Enter 不做決定。
 func (u *ui) handleExplicitApprovalKey(key keyEvent) error {
 	approval := u.approval
@@ -1274,6 +1288,9 @@ func (u *ui) handleExplicitApprovalKey(key keyEvent) error {
 		optionID, label = CancelApprovalID, "cancelled"
 	case keyRune:
 		if key.rune >= '1' && key.rune <= '9' {
+			if u.now().Sub(approval.shownAt) < approvalTypeaheadGuard {
+				return nil
+			}
 			if index := int(key.rune - '1'); index < len(approval.options) {
 				optionID, label = approval.options[index].ID, approval.options[index].Label
 			}
