@@ -28,6 +28,8 @@ type options struct {
 	version    bool
 	prompt     string
 	runtime    runtimeOverrides
+	backend    string   // --backend
+	codexFlags []string // 明確帶入的 codex 專屬旗標（如 "--sandbox"），非 codex backend 會被拒絕
 }
 
 type runtimeOverrides struct {
@@ -54,12 +56,18 @@ func Run(args []string) int {
 		return 0
 	}
 
+	registry, spec, err := selectBackend(opts, os.Getenv("LUMEN_BACKEND"))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%s: %v\n", appName, err)
+		return 2
+	}
+
 	if opts.prompt == "" && !term.IsTerminal(int(os.Stdin.Fd())) {
 		fmt.Fprintln(os.Stderr, "lumen: interactive terminal required")
 		return 2
 	}
 
-	backend, err := startCodexBackend()
+	backend, err := spec.newBackend()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%s: %v\n", appName, err)
 		return 1
@@ -73,7 +81,11 @@ func Run(args []string) int {
 	}
 
 	if err := backend.Open(context.Background()); err != nil {
-		fmt.Fprintf(os.Stderr, "%s: initialize app-server: %v\n", appName, err)
+		if spec.Type == backendTypeCodex {
+			fmt.Fprintf(os.Stderr, "%s: initialize app-server: %v\n", appName, err)
+		} else {
+			fmt.Fprintf(os.Stderr, "%s: %v\n", appName, err)
+		}
 		return 1
 	}
 
@@ -88,6 +100,8 @@ func Run(args []string) int {
 		threadCWD = cwd
 	}
 	ui := newUI(backend, thread, threadCWD, opts.fullscreen, opts.runtime)
+	ui.registry = registry
+	ui.serverFactory = registry.Factory(spec.Name)
 	if err := ui.run(opts.prompt); err != nil {
 		fmt.Fprintf(os.Stderr, "%s: %v\n", appName, err)
 		return 1
@@ -115,6 +129,7 @@ Options:
 `)
 		fs.PrintDefaults()
 	}
+	fs.StringVar(&opts.backend, "backend", "", "backend to use: claude, gemini, codex or a name from backends.json (default: LUMEN_BACKEND, config default, then claude)")
 	fs.StringVar(&opts.resume, "resume", "", "resume a Codex thread by id")
 	fs.BoolVar(&opts.continue_, "continue", false, "resume the newest thread for this directory")
 	fs.BoolVar(&opts.fullscreen, "fullscreen", true, "use the full-screen app shell (default)")
@@ -129,6 +144,12 @@ Options:
 	if err := fs.Parse(args); err != nil {
 		return opts, err
 	}
+	fs.Visit(func(f *flag.Flag) {
+		switch f.Name {
+		case "model", "reasoning-effort", "sandbox", "approval-policy", "ask-for-approval":
+			opts.codexFlags = append(opts.codexFlags, "--"+f.Name)
+		}
+	})
 	if opts.resume != "" && opts.continue_ {
 		return opts, errors.New("--resume and --continue cannot be combined")
 	}
@@ -140,6 +161,23 @@ Options:
 	}
 	opts.prompt = strings.TrimSpace(strings.Join(fs.Args(), " "))
 	return opts, nil
+}
+
+// selectBackend 載入 registry 並依 --backend > LUMEN_BACKEND > config default > claude 選出 backend；
+// 非 codex backend 帶 codex 專屬旗標時明確報錯。所有錯誤皆屬設定錯誤（exit code 2），此時尚未啟動任何 backend。
+func selectBackend(opts options, envBackend string) (*backendRegistry, backendSpec, error) {
+	registry, err := loadBackendRegistry()
+	if err != nil {
+		return nil, backendSpec{}, err
+	}
+	spec, err := registry.Resolve(opts.backend, envBackend)
+	if err != nil {
+		return nil, backendSpec{}, err
+	}
+	if spec.Type != backendTypeCodex && len(opts.codexFlags) > 0 {
+		return nil, backendSpec{}, fmt.Errorf("flag %s is only supported by backend codex (selected backend: %s)", opts.codexFlags[0], spec.Name)
+	}
+	return registry, spec, nil
 }
 
 func validateRuntimeOverrides(overrides runtimeOverrides) error {
@@ -201,9 +239,15 @@ type historyInput struct {
 
 func openThread(backend Backend, cwd string, opts options) (SessionInfo, error) {
 	if opts.resume != "" {
+		if !backend.Caps().SessionResume {
+			return SessionInfo{}, fmt.Errorf("backend %s cannot resume sessions", backend.Name())
+		}
 		return backend.ResumeSession(opts.resume, cwd, opts.runtime)
 	}
 	if opts.continue_ {
+		if !backend.Caps().SessionList {
+			return SessionInfo{}, fmt.Errorf("backend %s cannot list sessions", backend.Name())
+		}
 		threads, err := backend.ListSessions(cwd, 1)
 		if err != nil {
 			return SessionInfo{}, err

@@ -215,3 +215,136 @@ func TestBackendConfigRejectsUnknownKeys(t *testing.T) {
 		}
 	}
 }
+
+// T-P3-03：--backend 旗標與 selectBackend 的優先序、未知 name。
+func TestParseBackendFlagAndSelection(t *testing.T) {
+	useConfigDir(t, `{"default":"gemini"}`)
+	opts, err := parseOptions([]string{"--backend", "codex", "hello"})
+	if err != nil || opts.backend != "codex" || opts.prompt != "hello" {
+		t.Fatalf("parseOptions() = %#v, %v", opts, err)
+	}
+	cases := []struct {
+		args      []string
+		env, want string
+	}{
+		{[]string{"--backend", "claude"}, "codex", "claude"},
+		{nil, "codex", "codex"},
+		{nil, "", "gemini"},
+	}
+	for _, tc := range cases {
+		opts, err := parseOptions(tc.args)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, spec, err := selectBackend(opts, tc.env)
+		if err != nil || spec.Name != tc.want {
+			t.Errorf("selectBackend(%v, %q) = %q, %v; want %q", tc.args, tc.env, spec.Name, err, tc.want)
+		}
+	}
+	opts, _ = parseOptions([]string{"--backend", "nope"})
+	_, _, err = selectBackend(opts, "")
+	if err == nil || !strings.Contains(err.Error(), "claude, gemini, codex") {
+		t.Errorf("unknown backend error = %v", err)
+	}
+}
+
+// T-P3-04：非 codex backend 帶 codex 專屬旗標 -> 明確錯誤，指名旗標與 backend。
+func TestCodexOnlyFlagsRejectedOnOtherBackends(t *testing.T) {
+	useConfigDir(t, "")
+	for _, tc := range []struct {
+		args []string
+		flag string
+	}{
+		{[]string{"--model", "x"}, "--model"},
+		{[]string{"--reasoning-effort", "high"}, "--reasoning-effort"},
+		{[]string{"--sandbox", "read-only"}, "--sandbox"},
+		{[]string{"--approval-policy", "never"}, "--approval-policy"},
+		{[]string{"--ask-for-approval", "never"}, "--ask-for-approval"},
+	} {
+		for _, backend := range []string{"claude", "gemini"} {
+			opts, err := parseOptions(append([]string{"--backend", backend}, tc.args...))
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, _, err = selectBackend(opts, "")
+			if err == nil || !strings.Contains(err.Error(), tc.flag) || !strings.Contains(err.Error(), backend) || !strings.Contains(err.Error(), "only supported by backend codex") {
+				t.Errorf("%v on %s: error = %v", tc.args, backend, err)
+			}
+		}
+		opts, _ := parseOptions(append([]string{"--backend", "codex"}, tc.args...))
+		if _, _, err := selectBackend(opts, ""); err != nil {
+			t.Errorf("%v on codex: error = %v", tc.args, err)
+		}
+	}
+	// 預設 backend（claude）也要擋。
+	opts, _ := parseOptions([]string{"--sandbox", "read-only"})
+	if _, _, err := selectBackend(opts, ""); err == nil {
+		t.Error("--sandbox on default backend was silently accepted")
+	}
+}
+
+// T-P3-03 / T-P3-13 / T-P3-14：設定或選擇錯誤時 Run 以 exit code 2 結束，不啟動任何 backend。
+func TestRunConfigErrorsExitTwo(t *testing.T) {
+	t.Setenv("LUMEN_CODEX_BIN", "/nonexistent/codex")
+	t.Setenv("LUMEN_BACKEND", "")
+	useConfigDir(t, "")
+	if code := Run([]string{"--backend", "nope", "hi"}); code != 2 {
+		t.Errorf("unknown backend exit = %d", code)
+	}
+	if code := Run([]string{"--sandbox", "read-only", "hi"}); code != 2 {
+		t.Errorf("codex flag on claude exit = %d", code)
+	}
+	t.Setenv("LUMEN_BACKEND", "nope")
+	if code := Run([]string{"hi"}); code != 2 {
+		t.Errorf("LUMEN_BACKEND unknown exit = %d", code)
+	}
+	t.Setenv("LUMEN_BACKEND", "")
+	path := useConfigDir(t, `{"backends":{"x":{"type":"acp","command":"a","env":{"K":"V"}}}}`)
+	if code := Run([]string{"hi"}); code != 2 {
+		t.Errorf("env key exit = %d", code)
+	}
+	if err := os.WriteFile(path, []byte(`{}`), 0o666); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0o666); err != nil {
+		t.Fatal(err)
+	}
+	if code := Run([]string{"hi"}); code != 2 {
+		t.Errorf("writable config exit = %d", code)
+	}
+}
+
+// T-P3-05：lumen codex ... 仍直接 passthrough 給官方 codex，不受 backend 預設與設定檔影響。
+func TestNativeCodexPassthroughIgnoresBackendSelection(t *testing.T) {
+	dir := t.TempDir()
+	script := filepath.Join(dir, "codex")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nexit 7\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("LUMEN_CODEX_BIN", script)
+	t.Setenv("LUMEN_BACKEND", "gemini")
+	useConfigDir(t, `{"invalid json`)
+	if code := Run([]string{"codex", "--version"}); code != 7 {
+		t.Errorf("lumen codex exit = %d, want 7", code)
+	}
+	if code := Run([]string{"exec", "hi"}); code != 7 {
+		t.Errorf("lumen exec exit = %d, want 7", code)
+	}
+	if args, ok := nativeCodexInvocation([]string{"--backend", "claude", "hello"}); ok {
+		t.Errorf("--backend prompt treated as native codex: %v", args)
+	}
+}
+
+// openThread：--resume / --continue 對沒有該 capability 的 backend 明確報錯，不默默開新 session。
+func TestOpenThreadChecksCapabilities(t *testing.T) {
+	backend := &fakeBackend{}
+	if _, err := openThread(backend, "/tmp", options{resume: "abc"}); err == nil || !strings.Contains(err.Error(), "fake cannot resume sessions") {
+		t.Errorf("resume error = %v", err)
+	}
+	if _, err := openThread(backend, "/tmp", options{continue_: true}); err == nil || !strings.Contains(err.Error(), "backend fake cannot list sessions") {
+		t.Errorf("continue error = %v", err)
+	}
+	if info, err := openThread(backend, "/tmp", options{}); err != nil || info.ID != "fake-session" {
+		t.Errorf("new session = %#v, %v", info, err)
+	}
+}

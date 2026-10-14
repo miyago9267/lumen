@@ -418,6 +418,7 @@ type ui struct {
 	corallineSnapshot     string
 	corallineError        string
 	serverFactory         func() (Backend, error)
+	registry              *backendRegistry // 可用 backend（/backend 使用）；nil 表示不支援切換
 	clock                 func() time.Time // nil 使用 time.Now；測試注入
 }
 
