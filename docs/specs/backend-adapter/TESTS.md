@@ -40,7 +40,8 @@ M = 手動 smoke。所有 U/I 以 `go test -race ./...` 執行。
   `/<cmd> is not supported by backend <name>` 且不把 slash text 送成 prompt；`codexBackend` 下所有現有
   command 行為不變。
 - **T-P1-07 (I)** WHEN codex 連線中斷 THE SYSTEM SHALL 以 bounded backoff 重啟並 `ResumeSession`，
-  失敗且 transcript 有內容時開新 session（與重構前的 supervisor 測試等價）。
+  resume 失敗（`no rollout found`）且 transcript 為空時開新 session；transcript 有內容時保留原錯誤、不開新
+  session（與重構前的 supervisor 測試及 `canStartFreshThreadAfterResume` 等價）。
 - **T-P1-08 (U)** THE SYSTEM SHALL 讓重構前既有的 `go test -race ./...` 全部通過；測試改動只限於輸入改成
   normalized event，無新增 skip。
 - **T-P1-09 (M)** WHEN 以預設方式（P1 尚無 `--backend`）啟動並走 prompt / approval / interrupt /
