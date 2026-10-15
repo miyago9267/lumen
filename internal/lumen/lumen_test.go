@@ -754,7 +754,7 @@ func TestScreenInputAndOutputShareTurnCardWithSeparateColors(t *testing.T) {
 	frontend.screenAdd(screenUser, "hello")
 	frontend.screenAdd(screenAssistant, "world")
 	rows := frontend.screenTranscriptRows(80)
-	if len(rows) < 5 {
+	if len(rows) < 4 {
 		t.Fatalf("transcript rows = %d, want a turn card: %#v", len(rows), rows)
 	}
 	userRow, assistantRow := screenTranscriptRow{}, screenTranscriptRow{}
@@ -776,7 +776,7 @@ func TestScreenInputAndOutputShareTurnCardWithSeparateColors(t *testing.T) {
 	if !strings.Contains(plain, "› hello") || !strings.Contains(plain, "world") {
 		t.Fatalf("turn card content missing: %q", plain)
 	}
-	if !strings.Contains(plain, "┌─ turn 1") || !strings.Contains(plain, "└") || !strings.Contains(plain, "[ask]") {
+	if !strings.Contains(plain, "── turn 1") || !strings.Contains(plain, "[ask]") {
 		t.Fatalf("turn card chrome missing: %q", plain)
 	}
 	if userRow.turnKey == "" || userRow.turnKey != assistantRow.turnKey {
@@ -1102,7 +1102,7 @@ func TestScreenTurnCardExposesAskAndForkActions(t *testing.T) {
 		}
 		return strings.Join(values, "\n")
 	}())
-	for _, expected := range []string{"┌─ turn 1", "› question", "answer", "turn completed", "[ask]", "[fork]", "└"} {
+	for _, expected := range []string{"── turn 1", "› question", "answer", "turn completed", "[ask]", "[fork]"} {
 		if !strings.Contains(plain, expected) {
 			t.Fatalf("turn card missing %q: %q", expected, plain)
 		}
@@ -1317,8 +1317,8 @@ func TestCompletedToolActivityCollapsesIntoOneHiddenRow(t *testing.T) {
 	frontend.handleItemCompleted(json.RawMessage(`{"threadId":"thread-1","item":{"type":"commandExecution","status":"failed","exitCode":2}}`))
 
 	collapsed := stripANSI(frontend.screenFrame(100, 20))
-	if strings.Count(collapsed, "Ctrl+O to show") != 1 {
-		t.Fatalf("completed tool activity rendered %d collapsed rows: %q", strings.Count(collapsed, "Ctrl+O to show"), collapsed)
+	if strings.Count(collapsed, "⋯ 2 tools") != 1 {
+		t.Fatalf("completed tool activity rendered %d collapsed rows: %q", strings.Count(collapsed, "⋯ 2 tools"), collapsed)
 	}
 	for _, hidden := range []string{"$ first", "$ second", "failed exit 1", "failed exit 2"} {
 		if strings.Contains(collapsed, hidden) {
@@ -1647,7 +1647,7 @@ func TestScreenCollapsesToolOutputByDefault(t *testing.T) {
 	frontend.screenAdd(screenTool, "output\nline-one\nline-two")
 
 	collapsed := stripANSI(frontend.screenFrame(80, 16))
-	if strings.Contains(collapsed, "line-one") || strings.Contains(collapsed, "$ rg -n TODO .") || strings.Count(collapsed, "tools hidden") != 1 {
+	if strings.Contains(collapsed, "line-one") || strings.Contains(collapsed, "$ rg -n TODO .") || strings.Count(collapsed, "⋯ 1 tool") != 1 {
 		t.Fatalf("tool use was not collapsed: %q", collapsed)
 	}
 	frontend.showToolOutput = true
@@ -1666,7 +1666,7 @@ func TestScreenHistoryToolOutputUsesCollapsedBlock(t *testing.T) {
 		Status:           "completed",
 	})
 	collapsed := stripANSI(frontend.screenFrame(80, 16))
-	if strings.Contains(collapsed, "history-output-line") || strings.Contains(collapsed, "$ rg TODO") || strings.Count(collapsed, "tools hidden") != 1 {
+	if strings.Contains(collapsed, "history-output-line") || strings.Contains(collapsed, "$ rg TODO") || strings.Count(collapsed, "⋯ 1 tool") != 1 {
 		t.Fatalf("history tool use was not collapsed: %q", collapsed)
 	}
 }
@@ -1683,7 +1683,7 @@ func TestTurnFinishAddsRecap(t *testing.T) {
 	}
 	frontend.finishTurn("completed")
 	plain := stripANSI(frontend.screenFrame(80, 16))
-	for _, expected := range []string{"recap", "1 tool", "turn completed"} {
+	for _, expected := range []string{"✓ completed", "1 tool"} {
 		if !strings.Contains(plain, expected) {
 			t.Fatalf("recap missing %q: %q", expected, plain)
 		}

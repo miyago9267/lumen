@@ -21,7 +21,7 @@ type corallineWorkspacePayload struct {
 }
 
 type corallineModelPayload struct {
-	DisplayName string `json:"display_name"`
+	DisplayName string `json:"display_name,omitempty"`
 }
 
 type corallineEffortPayload struct {

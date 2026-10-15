@@ -391,6 +391,7 @@ type ui struct {
 	cancelAndSend         string
 	commandPopupIndex     int
 	commandPopupDismissed bool
+	modelCache            *modelCandidateCache
 	lastOutput            time.Time
 	lastCtrlC             time.Time
 	branch                string
@@ -549,8 +550,20 @@ func (u *ui) renderHeader() {
 	effort := u.effectiveEffort()
 	approval := u.effectiveApproval()
 	sandbox := u.effectiveSandbox()
-	fmt.Fprintf(u.out, "%s%sLumen%s  %s%s%s  %s%s%s\n", bold, cyan, reset, muted, model, reset, muted, effort, reset)
-	fmt.Fprintf(u.out, "%s%s%s  %sthread %s%s · %s%s%s · %ssandbox %s%s", bold, displayCWD(u.cwd), reset, muted, shortID(u.thread.ID), reset, muted, approval, reset, muted, sandbox, reset)
+	fmt.Fprintf(u.out, "%s%sLumen%s", bold, cyan, reset)
+	for _, value := range []string{model, effort} {
+		if value != "" {
+			fmt.Fprintf(u.out, "  %s%s%s", muted, value, reset)
+		}
+	}
+	fmt.Fprintln(u.out)
+	fmt.Fprintf(u.out, "%s%s%s  %sthread %s%s", bold, displayCWD(u.cwd), reset, muted, shortID(u.thread.ID), reset)
+	if approval != "" {
+		fmt.Fprintf(u.out, " · %s%s%s", muted, approval, reset)
+	}
+	if sandbox != "" {
+		fmt.Fprintf(u.out, " · %ssandbox %s%s", muted, sandbox, reset)
+	}
 	if name := strings.TrimSpace(u.thread.Name); name != "" {
 		fmt.Fprintf(u.out, " · %sname %s%s", muted, sanitizeText(name), reset)
 	}
@@ -558,23 +571,43 @@ func (u *ui) renderHeader() {
 	fmt.Fprintf(u.out, "%sEnter%s send · %sAlt+Enter%s newline · %sCtrl-C%s twice quit · %s/help%s · %sinline scrollback fallback%s\n\n", cyan, reset, cyan, reset, cyan, reset, cyan, reset, muted, reset)
 }
 
+// effective* 回傳目前生效的值；未知時回傳空字串，呼叫端必須省略該 segment，不得顯示 placeholder。
 func (u *ui) effectiveModel() string {
-	return valueOr(valueOr(u.overrides.model, u.thread.Model), "configured model")
+	return valueOr(u.overrides.model, u.thread.Model)
 }
 
 func (u *ui) effectiveEffort() string {
-	return valueOr(valueOr(u.overrides.reasoningEffort, u.thread.ReasoningEffort), "configured effort")
+	return valueOr(u.overrides.reasoningEffort, u.thread.ReasoningEffort)
 }
 
 func (u *ui) effectiveApproval() string {
-	return valueOr(valueOr(u.overrides.approvalPolicy, u.thread.ApprovalPolicy), "configured approval")
+	return valueOr(u.overrides.approvalPolicy, u.thread.ApprovalPolicy)
 }
 
 func (u *ui) effectiveSandbox() string {
 	if u.overrides.sandbox != "" {
 		return u.overrides.sandbox
 	}
+	if len(u.thread.Sandbox) == 0 {
+		return ""
+	}
 	return sandboxLabel(u.thread.Sandbox)
+}
+
+// knownValue 供明細畫面使用：未知時顯示 unknown，而不是空白或 placeholder。
+func knownValue(value string) string {
+	return valueOr(value, "unknown")
+}
+
+// joinKnown 以 separator 串接非空 segment。
+func joinKnown(separator string, parts ...string) string {
+	known := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if part != "" {
+			known = append(known, part)
+		}
+	}
+	return strings.Join(known, separator)
 }
 
 func (u *ui) renderHistory() {
@@ -930,7 +963,7 @@ func (u *ui) showStatus() {
 	u.input = nil
 	u.cursor = 0
 	if u.screenMode {
-		u.screenAdd(screenInfo, fmt.Sprintf("status\n  model       %s\n  effort      %s\n  approval    %s\n  sandbox     %s\n  cwd         %s\n  thread      %s\n  state       %s", u.effectiveModel(), u.effectiveEffort(), u.effectiveApproval(), u.effectiveSandbox(), u.cwd, u.thread.ID, map[bool]string{true: "working", false: "idle"}[u.busy]))
+		u.screenAdd(screenInfo, fmt.Sprintf("status\n  model       %s\n  effort      %s\n  approval    %s\n  sandbox     %s\n  cwd         %s\n  thread      %s\n  state       %s", knownValue(u.effectiveModel()), knownValue(u.effectiveEffort()), knownValue(u.effectiveApproval()), knownValue(u.effectiveSandbox()), u.cwd, u.thread.ID, map[bool]string{true: "working", false: "idle"}[u.busy]))
 		return
 	}
 	model := valueOr(u.overrides.model, u.thread.Model)
@@ -1168,6 +1201,11 @@ func (u *ui) handleEvent(event Event) {
 		}
 	case EvCommandsUpdated:
 		u.agentCommands = event.Commands
+	case EvModelChanged:
+		u.thread.Model = event.Model
+		u.modelCache = nil
+	case EvEffortChanged:
+		u.thread.ReasoningEffort = event.Effort
 	case EvTurnCompleted:
 		// 失敗原因若已由 error notice 顯示過就不重複。
 		if event.Err != nil && event.Err.Error() != u.lastErrorNotice {
@@ -1224,8 +1262,7 @@ func (u *ui) finishTurn(status string) {
 	if status == "" {
 		status = "completed"
 	}
-	u.screenAdd(screenInfo, u.recapText(status))
-	u.screenAdd(screenStatus, "turn "+status)
+	u.screenAdd(screenRecap, u.recapLine(status))
 	u.endScreenTurn()
 	if u.screenMode {
 		u.startNextPrompt()
@@ -1534,6 +1571,23 @@ func pluralSuffix(count int) string {
 	return "s"
 }
 
+// recapLine 是 screen mode turn 結尾唯一的一行：`✓ completed · 47 tools · 1 file change`。
+func (u *ui) recapLine(status string) string {
+	status = valueOr(status, "completed")
+	mark := "✓"
+	if status != "completed" {
+		mark = "✗"
+	}
+	parts := []string{mark + " " + status}
+	if u.recap.toolCount > 0 {
+		parts = append(parts, fmt.Sprintf("%d tool%s", u.recap.toolCount, pluralSuffix(u.recap.toolCount)))
+	}
+	if u.recap.fileChanges > 0 {
+		parts = append(parts, fmt.Sprintf("%d file change%s", u.recap.fileChanges, pluralSuffix(u.recap.fileChanges)))
+	}
+	return strings.Join(parts, " · ")
+}
+
 func (u *ui) recapText(status string) string {
 	lines := []string{"recap · " + valueOr(status, "completed")}
 	toolLabel := "tool"
@@ -1673,7 +1727,7 @@ func (u *ui) renderPrompt() {
 			if index == selected {
 				marker = "› "
 			}
-			fmt.Fprintf(u.out, "\n%s%s/%-18s  %s%s", muted, marker, command.name, command.description, reset)
+			fmt.Fprintf(u.out, "\n%s%s%-19s  %s%s", muted, marker, command.popupLabel(), command.description, reset)
 		}
 		fmt.Fprintf(u.out, "\n%s↑↓ choose · Tab complete · Enter run · Esc close%s", cyan, reset)
 		u.promptLines += popupLines
@@ -1883,9 +1937,19 @@ func (u *ui) printError(err error) {
 	u.lastOutput = time.Now()
 }
 
-func sanitizeText(value string) string {
+// keepCodeSpanMarks 讓 sanitizeText 保留 inline code span 的內部標記；只有版面計算（wrapDisplay）使用。
+const keepCodeSpanMarks = true
+
+func sanitizeText(value string, keepMarks ...bool) string {
 	var builder strings.Builder
+	keep := len(keepMarks) > 0 && keepMarks[0]
 	for _, character := range value {
+		if isCodeSpanMark(character) {
+			if keep {
+				builder.WriteRune(character)
+			}
+			continue
+		}
 		switch character {
 		case '\n', '\t':
 			builder.WriteRune(character)

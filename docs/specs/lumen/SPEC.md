@@ -3,7 +3,7 @@ id: spec-lumen
 title: Lumen terminal UI
 status: in-progress
 created: 2026-09-15
-updated: 2026-09-16
+updated: 2026-10-15
 author: Miyago
 approved_by:
 tags: [codex, tui, app-server, ux]
@@ -85,7 +85,8 @@ provider 的品牌、畫面資產或 shortcut parity。
 - full-screen bottom status label 必須固定包含 `coralline`，並保留目前的 model、effort、
   approval 或 turn state。
 - 若本機存在 `Nanako0129/coralline` 的 `statusline.sh`，dock 第一列必須把 Lumen 的
-  cwd、model、effort 與 context usage 映射成它的 stdin JSON payload，並顯示 renderer
+  cwd、model、effort 與 context usage 映射成它的 stdin JSON payload（值未知時省略欄位，
+  不傳 placeholder 字串），並顯示 renderer
   的 ANSI statusline；renderer 缺少、timeout 或失敗時必須保留 native dock，不得讓
   session 中止，也不得改寫 Claude Code settings。
 - app-server EOF、transport error 或單一 UI event handler panic 不得直接結束 fullscreen
@@ -242,13 +243,17 @@ Full-screen mode 的垂直順序固定為：
     不依賴 terminal emulator 是否接管 drag。
   - **By:** Miyago (2026-09-16)
 - **Turn cards and action rail:** full-screen transcript 以 turn key 將 user prompt、
-  assistant stream、tool progress 與 recap 包在同一張 card；card 內容 click 進入
-  follow-up composer，`[fork]` action 使用該 turn 的 `lastTurnId`。
+  assistant stream、tool progress 與 recap 歸在同一個 turn 區塊，以單一 header rule
+  （`── turn N ──`，無四邊框）分隔；內容 click 進入 follow-up composer，turn 被選取後 card 內
+  不再顯示 `[ask]`（composer 即 affordance），`[fork]` action 使用該 turn 的 `lastTurnId`。
+  recap 收成一行 `✓ completed · N tools · M file changes`。
+  （2026-10-15 修訂，見 `docs/specs/transcript-ux/SPEC.md` D5 / D6：原為 `┌─ ─┐` 框線與多行 recap。）
   - **Reason:** 保留 turn 邊界，讓追問與 branch 都有明確 target，同時不犧牲既有
     drag-to-copy selection。
   - **By:** Miyago (2026-09-16)
 - **Low-density transcript:** tool activity 預設隱藏 command、output 與 completion
-  status，同一段只留一行 muted marker；`Ctrl+O` 展開目前 transcript。reasoning 只
+  status，同一段只留一行 muted marker（`⋯ N tools`，N 為實際 tool 次數，click / `Ctrl+O`
+  提示只在 hover tooltip）；`Ctrl+O` 展開目前 transcript。reasoning 只
   由 transient status row 顯示，不保存每一個 reasoning item。
   - **Reason:** 預設把注意力留給 assistant conclusion，仍保留需要時的 debug path。
   - **By:** Miyago (2026-09-16)

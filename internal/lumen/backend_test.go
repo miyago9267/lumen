@@ -190,7 +190,7 @@ func TestCodexBackendTurnRendersTranscript(t *testing.T) {
 		t.Fatalf("turn did not finish: busy=%t turnID=%q", frontend.busy, frontend.turnID)
 	}
 	plain := stripANSI(frontend.screenFrame(100, 30))
-	for _, expected := range []string{"$ ls", "a.txt", "failed exit 1", "done", "turn completed", "recap · completed"} {
+	for _, expected := range []string{"$ ls", "a.txt", "failed exit 1", "done", "✓ completed"} {
 		if !strings.Contains(plain, expected) {
 			t.Fatalf("transcript missing %q: %q", expected, plain)
 		}
@@ -293,7 +293,7 @@ func TestToolCompletionLabelIsShownVerbatim(t *testing.T) {
 		t.Fatalf("label was rewritten: %q", plain)
 	}
 	frontend.handleEvent(EvTurnCompleted{Status: TurnFailed, Label: "failed"})
-	if plain := stripANSI(frontend.screenFrame(100, 20)); !strings.Contains(plain, "turn failed") {
+	if plain := stripANSI(frontend.screenFrame(100, 20)); !strings.Contains(plain, "✗ failed") {
 		t.Fatalf("turn label was rewritten: %q", plain)
 	}
 }
@@ -397,7 +397,7 @@ func TestFailedTurnShowsReason(t *testing.T) {
 	frontend := &ui{screenMode: true}
 	frontend.handleEvent(EvTurnCompleted{Status: TurnFailed, Label: "failed", Err: reason})
 	plain := stripANSI(frontend.screenFrame(120, 20))
-	if !strings.Contains(plain, "model not supported with ChatGPT account") || !strings.Contains(plain, "turn failed") {
+	if !strings.Contains(plain, "model not supported with ChatGPT account") || !strings.Contains(plain, "✗ failed") {
 		t.Fatalf("failure reason missing: %q", plain)
 	}
 

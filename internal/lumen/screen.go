@@ -27,6 +27,7 @@ const (
 	screenError
 	screenCode
 	screenDiagram
+	screenRecap
 )
 
 type screenBlock struct {
@@ -387,8 +388,7 @@ func (u *ui) screenHeaderLine(width int) string {
 	if name := strings.TrimSpace(u.thread.Name); name != "" {
 		left += " · " + sanitizeText(name)
 	}
-	right := fmt.Sprintf("%s · %s", u.effectiveModel(), u.effectiveEffort())
-	right += " · " + u.effectiveApproval() + " · " + u.effectiveSandbox()
+	right := joinKnown(" · ", u.effectiveModel(), u.effectiveEffort(), u.effectiveApproval(), u.effectiveSandbox())
 	if usage := u.usageLabel(); usage != "" {
 		right = usage + "  " + right
 	}
@@ -642,7 +642,7 @@ func screenStyle(kind screenBlockKind) string {
 		return yellow
 	case screenError:
 		return red
-	case screenStatus, screenEvent:
+	case screenStatus, screenEvent, screenRecap:
 		return muted
 	default:
 		return ""
@@ -655,7 +655,8 @@ func screenStyledLine(kind screenBlockKind, value string, width int) string {
 	if padding < 0 {
 		padding = 0
 	}
-	return screenStyle(kind) + value + reset + strings.Repeat(" ", padding)
+	style := screenStyle(kind)
+	return style + expandCodeSpans(value, style) + reset + strings.Repeat(" ", padding)
 }
 
 func (u *ui) screenComposerLines(width int) []string {
@@ -771,17 +772,26 @@ func (u *ui) screenStatusLabel() string {
 		if u.cancelAndSend != "" {
 			label = "interrupting · cancel-and-send"
 		}
-	} else if u.replyTarget.key != "" {
-		label = fmt.Sprintf("ask about turn %d · type follow-up", u.replyTarget.ordinal)
 	} else if u.backend == nil {
 		label = "detached · app-server unavailable"
 	} else {
-		label = fmt.Sprintf("%s (%s) · %s", u.effectiveModel(), u.effectiveEffort(), u.effectiveApproval())
+		label = u.screenModelSummary()
 	}
-	if u.permissionNote != "" {
-		label += " · " + u.permissionNote
+	label = joinKnown(" · ", label, u.permissionNote)
+	return joinKnown(" · ", statusBarBrand, label)
+}
+
+// screenModelSummary 是 `model (effort) · approval`，只含已知的 segment。
+func (u *ui) screenModelSummary() string {
+	model := u.effectiveModel()
+	if effort := u.effectiveEffort(); effort != "" {
+		if model == "" {
+			model = effort
+		} else {
+			model += " (" + effort + ")"
+		}
 	}
-	return statusBarBrand + " · " + label
+	return joinKnown(" · ", model, u.effectiveApproval())
 }
 
 func (u *ui) screenDockLine(width int) string {
@@ -810,7 +820,7 @@ func (u *ui) screenDockLine(width int) string {
 		footer = "↑↓ select  ·  Enter submit  ·  Ctrl-C interrupt  ·  Esc cancel"
 	}
 	if u.replyTarget.key != "" && u.approval == nil && u.inputRequest == nil && !u.busy {
-		footer = fmt.Sprintf("turn %d selected · type follow-up  ·  Esc clear target", u.replyTarget.ordinal)
+		footer = "Esc clear turn target"
 	}
 	if u.scrollOffset > 0 && !u.shortcuts && u.approval == nil && u.inputRequest == nil {
 		footer = "PageUp/PageDown or wheel scroll  ·  at older output"
@@ -986,6 +996,12 @@ func displayWidth(value string) int {
 }
 
 func runeDisplayWidth(character rune) int {
+	if isCodeSpanMark(character) {
+		if codeSpanBackticks() {
+			return 1
+		}
+		return 0
+	}
 	if character == '\t' {
 		return 4
 	}
@@ -1026,11 +1042,25 @@ func truncateDisplay(value string, width int) string {
 	return builder.String()
 }
 
+// codeSpanWidth 回傳 runes 開頭到下一個 close 標記（或結尾）的顯示寬度，含兩端標記。
+func codeSpanWidth(rest []rune) int {
+	total := runeDisplayWidth(codeSpanOpen)
+	for _, character := range rest {
+		total += runeDisplayWidth(character)
+		if character == codeSpanClose {
+			break
+		}
+	}
+	return total
+}
+
+// wrapDisplay 依顯示寬度逐字換行。inline code span 放得下一整行時不跨行拆開；
+// 必須拆開時，在換行處 close / re-open，使每一行的 span 標記成對。
 func wrapDisplay(value string, width int) []string {
 	if width < 1 {
 		width = 1
 	}
-	value = sanitizeText(value)
+	value = sanitizeText(value, keepCodeSpanMarks)
 	paragraphs := strings.Split(value, "\n")
 	lines := make([]string, 0, len(paragraphs))
 	for _, paragraph := range paragraphs {
@@ -1038,14 +1068,35 @@ func wrapDisplay(value string, width int) []string {
 			lines = append(lines, "")
 			continue
 		}
-		current := make([]rune, 0, len(paragraph))
+		runes := []rune(paragraph)
+		current := make([]rune, 0, len(runes))
 		currentWidth := 0
-		for _, character := range paragraph {
+		inCode := false
+		flush := func() {
+			if inCode {
+				current = append(current, codeSpanClose)
+			}
+			lines = append(lines, string(current))
+			current = current[:0]
+			currentWidth = 0
+			if inCode {
+				current = append(current, codeSpanOpen)
+				currentWidth = runeDisplayWidth(codeSpanOpen)
+			}
+		}
+		for index, character := range runes {
 			characterWidth := runeDisplayWidth(character)
-			if len(current) > 0 && currentWidth+characterWidth > width {
-				lines = append(lines, string(current))
-				current = current[:0]
-				currentWidth = 0
+			switch {
+			case character == codeSpanOpen:
+				span := codeSpanWidth(runes[index+1:])
+				if currentWidth > 0 && span <= width && currentWidth+span > width {
+					flush()
+				}
+				inCode = true
+			case character == codeSpanClose:
+				inCode = false
+			case currentWidth > 0 && currentWidth+characterWidth > width:
+				flush()
 			}
 			current = append(current, character)
 			currentWidth += characterWidth

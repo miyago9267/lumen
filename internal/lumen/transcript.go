@@ -37,6 +37,10 @@ type screenTranscriptRow struct {
 	turnOrdinal int
 	toolGroup   string
 	actions     []screenActionRange
+	// hoverWidth 非 0 時，hover 只反白前 hoverWidth 欄，而不是整列。
+	hoverWidth int
+	// chrome 是 card 的分隔線；hover 時不反白。
+	chrome bool
 }
 
 type screenContentLine struct {
@@ -79,7 +83,7 @@ func (u *ui) screenTranscriptRows(width int) []screenTranscriptRow {
 			for index+1 < len(blocks) && sameToolGroup(block, blocks[index+1]) {
 				index++
 			}
-			rows = append(rows, u.collapsedToolGroupRows(block, index-start+1, width, "", "", 0)...)
+			rows = append(rows, u.collapsedToolGroupRows(block, toolUseCount(blocks[start:index+1]), width, "", "", 0)...)
 			index++
 			continue
 		}
@@ -110,14 +114,18 @@ func (u *ui) screenTurnRows(blocks []screenBlock, width, ordinal int) []screenTr
 		}
 	}
 	title := fmt.Sprintf("turn %d", ordinal)
-	if u.replyTarget.key == key {
+	selected := u.replyTarget.key == key
+	if selected {
 		title += " · selected"
 	}
+	canFork := u.canFork()
 	rows := []screenTranscriptRow{{
-		rendered:    screenCardBorder("┌─ "+title+" ", "┐", width),
+		rendered:    screenTurnRule(title, width),
+		tooltip:     screenTurnTooltip(ordinal, id != "" && canFork, selected),
 		turnKey:     key,
 		turnID:      id,
 		turnOrdinal: ordinal,
+		chrome:      true,
 	}}
 	for index := 0; index < len(blocks); {
 		block := blocks[index]
@@ -126,7 +134,7 @@ func (u *ui) screenTurnRows(blocks []screenBlock, width, ordinal int) []screenTr
 			for index+1 < len(blocks) && sameToolGroup(block, blocks[index+1]) {
 				index++
 			}
-			rows = append(rows, u.collapsedToolGroupRows(block, index-start+1, width, key, id, ordinal)...)
+			rows = append(rows, u.collapsedToolGroupRows(block, toolUseCount(blocks[start:index+1]), width, key, id, ordinal)...)
 			index++
 			continue
 		}
@@ -142,15 +150,9 @@ func (u *ui) screenTurnRows(blocks []screenBlock, width, ordinal int) []screenTr
 			turnID:  id,
 		}, width, key, id, ordinal)...)
 	}
-	canFork := u.canFork()
-	rows = append(rows, screenTurnActionRow(key, id, ordinal, width, canFork))
-	rows = append(rows, screenTranscriptRow{
-		rendered:    screenCardBorder("└", "┘", width),
-		tooltip:     screenTurnTooltip(ordinal, id != "" && canFork),
-		turnKey:     key,
-		turnID:      id,
-		turnOrdinal: ordinal,
-	})
+	if row, ok := screenTurnActionRow(key, id, ordinal, width, canFork, selected); ok {
+		rows = append(rows, row)
+	}
 	if !canFork {
 		for index := range rows {
 			rows[index].tooltip = strings.Replace(rows[index].tooltip, " · [fork] branch from here", "", 1)
@@ -177,34 +179,43 @@ func (u *ui) toolGroupExpanded(block screenBlock) bool {
 	return block.toolGroup != "" && u.expandedToolGroups[block.toolGroup]
 }
 
-func collapsedToolLabelForCount(count int) string {
-	if count <= 1 {
-		return "tools hidden · click to show · Ctrl+O to show"
+// toolUseCount 數一個 tool group 內實際的 tool 使用次數：不含 `output` block 與 completion status，
+// 與 turn recap 的 tools 數一致。group 內沒有 tool block（例如 replay 只留 status）時，每個 status 算一次。
+func toolUseCount(blocks []screenBlock) int {
+	uses, statuses := 0, 0
+	for _, block := range blocks {
+		switch {
+		case block.kind == screenTool && block.text != "output" && !strings.HasPrefix(block.text, "output\n"):
+			uses++
+		case block.kind != screenTool && block.toolActivity:
+			statuses++
+		}
 	}
-	return fmt.Sprintf("tools hidden · %d uses · click to show · Ctrl+O to show", count)
+	if uses == 0 {
+		uses = statuses
+	}
+	return maxInt(1, uses)
 }
 
+func collapsedToolLabelForCount(count int) string {
+	if count == 1 {
+		return "⋯ 1 tool"
+	}
+	return fmt.Sprintf("⋯ %d tools", count)
+}
+
+// collapsedToolGroupRows 把一個 tool group 收成單行 muted marker；click / Ctrl+O 的提示只放在 tooltip。
 func (u *ui) collapsedToolGroupRows(block screenBlock, count, width int, key, id string, ordinal int) []screenTranscriptRow {
-	collapsed := screenBlock{
-		kind:         screenStatus,
-		text:         collapsedToolLabelForCount(count),
-		turnKey:      key,
-		turnID:       id,
-		toolActivity: true,
-		toolGroup:    block.toolGroup,
-	}
-	rows := screenBlockRows(collapsed, width, key, id, ordinal)
-	tooltip := fmt.Sprintf("tool group · %d use", count)
-	if count != 1 {
-		tooltip += "s"
-	}
-	tooltip += " · click to show detail"
-	for index := range rows {
-		rows[index].tooltip = tooltip
-		rows[index].copyable = false
-		rows[index].copyText = ""
-	}
-	return rows
+	label := collapsedToolLabelForCount(count)
+	return []screenTranscriptRow{{
+		rendered:    screenStyledLine(screenStatus, label, width),
+		tooltip:     fmt.Sprintf("tool group · %s · click or Ctrl+O to show", strings.TrimPrefix(label, "⋯ ")),
+		turnKey:     key,
+		turnID:      id,
+		turnOrdinal: ordinal,
+		toolGroup:   block.toolGroup,
+		hoverWidth:  displayWidth(label),
+	}}
 }
 
 func (u *ui) toggleToolGroup(group string) {
@@ -245,7 +256,7 @@ func screenBlockRows(block screenBlock, width int, key, id string, ordinal int) 
 		}
 		wrapped := wrapDisplay(line.text, maxInt(1, width-displayWidth(prefix)))
 		for wrapIndex, value := range wrapped {
-			copyText := value
+			copyText := plainCodeSpans(value)
 			if wrapIndex > 0 {
 				value = strings.Repeat(" ", displayWidth(prefix)) + value
 			} else {
@@ -268,6 +279,9 @@ func screenBlockRows(block screenBlock, width int, key, id string, ordinal int) 
 }
 
 func screenBlockInlinePrefix(block screenBlock) string {
+	if block.kind == screenRecap {
+		return ""
+	}
 	label := screenBlockLabel(block)
 	if block.kind == screenUser || block.kind == screenAssistant {
 		return label + " › "
@@ -291,7 +305,7 @@ func screenBlockInlinePrefix(block screenBlock) string {
 func screenTurnBlockTooltip(block screenBlock, ordinal int, canFork bool) string {
 	preview := strings.TrimSpace(strings.SplitN(block.text, "\n", 2)[0])
 	if preview == "" {
-		return screenTurnTooltip(ordinal, canFork)
+		return screenTurnTooltip(ordinal, canFork, false)
 	}
 	return fmt.Sprintf("turn %d · %s · %s", ordinal, screenBlockLabel(block), truncateDisplay(preview, 72))
 }
@@ -305,29 +319,40 @@ func (u *ui) canFork() bool {
 	return u.backend.Caps().ForkAtTurn
 }
 
-func screenTurnActionRow(key, id string, ordinal, width int, canFork bool) screenTranscriptRow {
+// screenTurnActionRow 只輸出需要的 action：turn 已被選為 reply target 時，composer 的 `ask turn N`
+// 就是唯一的 ask affordance，card 內不再顯示 [ask]。沒有任何 action 時不輸出這一行。
+func screenTurnActionRow(key, id string, ordinal, width int, canFork, selected bool) (screenTranscriptRow, bool) {
 	const askLabel = "[ask]"
 	const forkLabel = "[fork]"
-	value := askLabel
+	const indent = 2
+	value := ""
 	actions := make([]screenActionRange, 0, 2)
-	if action, ok := screenActionRangeFor(screenTurnActionAsk, 2, askLabel, width); ok {
-		actions = append(actions, action)
+	add := func(action screenTurnAction, label string) {
+		if value != "" {
+			value += "  "
+		}
+		if span, ok := screenActionRangeFor(action, indent+displayWidth(value), label, width); ok {
+			actions = append(actions, span)
+		}
+		value += label
+	}
+	if !selected {
+		add(screenTurnActionAsk, askLabel)
 	}
 	if id != "" && canFork {
-		value += "  " + forkLabel
-		forkStart := 2 + displayWidth(askLabel+"  ")
-		if action, ok := screenActionRangeFor(screenTurnActionFork, forkStart, forkLabel, width); ok {
-			actions = append(actions, action)
-		}
+		add(screenTurnActionFork, forkLabel)
+	}
+	if value == "" {
+		return screenTranscriptRow{}, false
 	}
 	return screenTranscriptRow{
-		rendered:    screenCardContent(value, screenInfo, width),
-		tooltip:     screenTurnTooltip(ordinal, id != "" && canFork),
+		rendered:    screenStyledLine(screenInfo, strings.Repeat(" ", indent)+value, width),
+		tooltip:     screenTurnTooltip(ordinal, id != "" && canFork, selected),
 		turnKey:     key,
 		turnID:      id,
 		turnOrdinal: ordinal,
 		actions:     actions,
-	}
+	}, true
 }
 
 func screenActionRangeFor(action screenTurnAction, start int, label string, width int) (screenActionRange, bool) {
@@ -342,8 +367,11 @@ func screenActionRangeFor(action screenTurnAction, start int, label string, widt
 	return screenActionRange{action: action, start: start, end: end}, true
 }
 
-func screenTurnTooltip(ordinal int, canFork bool) string {
+func screenTurnTooltip(ordinal int, canFork, selected bool) string {
 	tooltip := fmt.Sprintf("turn %d · click to ask", ordinal)
+	if selected {
+		tooltip = fmt.Sprintf("turn %d · selected", ordinal)
+	}
 	if canFork {
 		tooltip += " · [fork] branch from here"
 	}
@@ -447,9 +475,17 @@ func screenBlockLabel(block screenBlock) string {
 		return "code"
 	case screenDiagram:
 		return "diagram"
+	case screenRecap:
+		return "recap"
 	default:
 		return "event"
 	}
+}
+
+// screenTurnRule 是 turn card 唯一的框線元素：`── turn N ────`。
+func screenTurnRule(title string, width int) string {
+	left := "── " + title + " "
+	return screenStyledLine(screenEvent, left+strings.Repeat("─", maxInt(0, width-displayWidth(left))), width)
 }
 
 func screenCardBorder(left, right string, width int) string {
@@ -542,29 +578,48 @@ func displaySlice(value string, start, end int) string {
 }
 
 func highlightScreenRange(rendered string, start, end int) string {
+	return highlightScreenRanges(rendered, [][2]int{{start, end}})
+}
+
+// highlightScreenRanges 以 reverse video 反白多個 [start, end) 欄範圍（相鄰字元合併成一段）。
+func highlightScreenRanges(rendered string, ranges [][2]int) string {
 	plain := screenPlainLine(rendered)
-	if start < 0 {
-		start = 0
+	total := displayWidth(plain)
+	valid := ranges[:0:0]
+	for _, span := range ranges {
+		start, end := maxInt(0, span[0]), minInt(span[1], total)
+		if start < end {
+			valid = append(valid, [2]int{start, end})
+		}
 	}
-	if end > displayWidth(plain) {
-		end = displayWidth(plain)
-	}
-	if start >= end {
+	if len(valid) == 0 {
 		return rendered
 	}
 	var builder strings.Builder
 	column := 0
+	reversed := false
 	for _, character := range plain {
 		characterWidth := runeDisplayWidth(character)
-		selected := column+characterWidth > start && column < end
-		if selected {
-			builder.WriteString("\x1b[7m")
+		selected := false
+		for _, span := range valid {
+			if column+characterWidth > span[0] && column < span[1] {
+				selected = true
+				break
+			}
+		}
+		if selected != reversed {
+			if selected {
+				builder.WriteString("\x1b[7m")
+			} else {
+				builder.WriteString("\x1b[27m")
+			}
+			reversed = selected
 		}
 		builder.WriteRune(character)
-		if selected {
-			builder.WriteString("\x1b[27m")
-		}
 		column += characterWidth
+	}
+	if reversed {
+		builder.WriteString("\x1b[27m")
 	}
 	return builder.String()
 }
@@ -583,7 +638,7 @@ func normalizedScreenSelection(selection screenSelection) (screenPoint, screenPo
 func (u *ui) screenRenderedRow(row screenTranscriptRow, rowIndex, width int) string {
 	rendered := row.rendered
 	if u.hoverText != "" && u.hoverRow == rowIndex {
-		rendered = highlightScreenRange(rendered, 0, width)
+		rendered = hoverHighlightedRow(row, rendered, width)
 	}
 	start, end, ok := normalizedScreenSelection(u.selection)
 	if !ok || rowIndex < start.row || rowIndex > end.row {
@@ -606,6 +661,24 @@ func (u *ui) screenRenderedRow(row screenTranscriptRow, rowIndex, width int) str
 		return rendered
 	}
 	return highlightScreenRange(rendered, from, to)
+}
+
+// hoverHighlightedRow 決定 hover 時反白哪些欄：有 action 的 row 只反白 action；
+// tool marker 只反白文字；card 分隔線不反白；其餘內容 row 維持整列反白。
+func hoverHighlightedRow(row screenTranscriptRow, rendered string, width int) string {
+	switch {
+	case len(row.actions) > 0:
+		ranges := make([][2]int, 0, len(row.actions))
+		for _, action := range row.actions {
+			ranges = append(ranges, [2]int{action.start, action.end + 1})
+		}
+		return highlightScreenRanges(rendered, ranges)
+	case row.hoverWidth > 0:
+		return highlightScreenRange(rendered, 0, row.hoverWidth)
+	case row.chrome:
+		return rendered
+	}
+	return highlightScreenRange(rendered, 0, width)
 }
 
 func (u *ui) selectedTranscriptText(width int) string {
