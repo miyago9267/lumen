@@ -13,6 +13,7 @@ type slashCommand struct {
 	aliases            []string
 	supportsInlineArgs bool
 	agent              bool // backend（ACP）宣告的 command；執行時以 "/name args" 文字送 prompt
+	argument           bool // 參數候選（例如 /model 的 model ID），name 是要補全的值而不是 command
 }
 
 // localSlashCommands 是不需要 backend 專屬功能、任何 backend 都可用的 Lumen-local command；
@@ -47,6 +48,12 @@ func (u *ui) slashCatalog() []slashCommand {
 			taken[alias] = true
 		}
 	}
+	if u.backend.Caps().ModelList {
+		if command, ok := lookupSlashCommand(slashCommandCatalog, "model"); ok {
+			catalog = append(catalog, command)
+			taken["model"] = true
+		}
+	}
 	for _, command := range u.agentCommands {
 		name := strings.ToLower(strings.TrimSpace(strings.TrimPrefix(command.Name, "/")))
 		if name == "" || taken[name] {
@@ -67,6 +74,9 @@ func (u *ui) filterSlashCommands(query string) []slashCommand {
 }
 
 func (u *ui) slashCommandsTitle() string {
+	if _, ok := u.modelArgItems(); ok {
+		return "⌘ models"
+	}
 	if u.dynamicCatalog() {
 		return "⌘ " + u.backend.Name() + " commands"
 	}
@@ -223,6 +233,9 @@ func (u *ui) commandPopupVisible() bool {
 	if u.commandPopupDismissed || u.approval != nil || u.inputRequest != nil || u.dashboard || u.backendPicker || u.shortcuts {
 		return false
 	}
+	if _, ok := u.modelArgItems(); ok {
+		return true
+	}
 	value := string(u.input)
 	if !strings.HasPrefix(value, "/") || strings.ContainsAny(strings.TrimPrefix(value, "/"), " \t\r\n") {
 		return false
@@ -235,6 +248,9 @@ func (u *ui) commandPopupVisible() bool {
 }
 
 func (u *ui) commandPopupItems() []slashCommand {
+	if items, ok := u.modelArgItems(); ok {
+		return items
+	}
 	query, _, ok := slashCommandInput(string(u.input))
 	if !ok {
 		return nil
@@ -280,7 +296,9 @@ func (u *ui) completeSlashCommand() bool {
 		return false
 	}
 	value := "/" + command.name
-	if command.supportsInlineArgs {
+	if command.argument {
+		value = "/model " + command.name
+	} else if command.supportsInlineArgs {
 		value += " "
 	}
 	u.input = []rune(value)
@@ -307,6 +325,13 @@ func (u *ui) handleCommandPopupKey(key keyEvent) (bool, error) {
 		u.renderPrompt()
 		return true, nil
 	case keyEnter:
+		if partial, ok := modelArgInput(string(u.input)); ok {
+			// 部分輸入（非完整 ID）時補全選取的 model 再執行；空白則直接執行（列出清單）。
+			if partial == "" || u.exactModelArg(partial) || !u.completeSlashCommand() {
+				return false, nil
+			}
+			return true, u.handleCommand(string(u.input))
+		}
 		query, _, _ := slashCommandInput(string(u.input))
 		if _, ok := u.slashCommandByName(query); !ok {
 			if !u.completeSlashCommand() {
@@ -344,7 +369,7 @@ func (u *ui) screenCommandPopupLines(width int) []string {
 			marker = "› "
 			kind = screenUser
 		}
-		line := fmt.Sprintf("%s/%-18s  %s", marker, command.name, command.description)
+		line := fmt.Sprintf("%s%-19s  %s", marker, command.popupLabel(), command.description)
 		lines = append(lines, screenComposerLine(line, width, kind))
 	}
 	lines = append(lines, screenComposerLine("↑↓ choose · Tab complete · Enter run · Esc close", width, screenInfo))
@@ -361,4 +386,13 @@ func (u *ui) inlineCommandPopupLines() int {
 		count = 6
 	}
 	return 2 + count
+}
+
+func (u *ui) exactModelArg(partial string) bool {
+	for _, option := range u.modelCandidates() {
+		if strings.EqualFold(option.ID, partial) {
+			return true
+		}
+	}
+	return false
 }

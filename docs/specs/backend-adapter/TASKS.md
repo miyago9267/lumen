@@ -93,3 +93,7 @@ spec: spec-lumen-backend-adapter
 - [x] T4.2 `lumen --help` 文字更新；`docs/specs/lumen/SPEC.md` 加交叉參照與 Requirements 中 codex 專屬措辭
   的限定語
 - [x] T4.3 版本號 bump 建議（`appVersion`，預設改變屬 minor 以上）與 release note 草稿 — T-P4-01
+
+## 後續
+
+- [x] T5.1 ACP `/model`：解析 model config option（flat / grouped）與 `models.availableModels` fallback，`ModelPicker` / `ModelSetter`，`config_option_update` -> `EvModelChanged`，`/model` 參數補全（codex 與 ACP）。見 PROGRESS.md「/model 支援」。

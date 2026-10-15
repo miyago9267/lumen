@@ -107,10 +107,16 @@ type acpBackend struct {
 	perms     map[string]*acpPermission
 	replay    *acpReplay
 	mode      string
+	models    *acpModels // nil = agent 沒有回報 model 清單
+	effort    string     // 最後已知的 thought_level；空 = agent 沒有回報
 	unknown   map[string]int
 }
 
-var _ Backend = (*acpBackend)(nil)
+var (
+	_ Backend     = (*acpBackend)(nil)
+	_ ModelPicker = (*acpBackend)(nil)
+	_ ModelSetter = (*acpBackend)(nil)
+)
 
 func newACPBackend(cfg acpConfig) *acpBackend {
 	return &acpBackend{
@@ -472,8 +478,29 @@ type acpSessionResult struct {
 	} `json:"modes"`
 	ConfigOptions []acpConfigOption `json:"configOptions"`
 	Models        *struct {
-		CurrentModelID string `json:"currentModelId"`
+		CurrentModelID  string `json:"currentModelId"`
+		AvailableModels []struct {
+			ModelID     string `json:"modelId"`
+			Name        string `json:"name"`
+			Description string `json:"description"`
+		} `json:"availableModels"`
 	} `json:"models"`
+}
+
+// modelList 優先使用 category=model 的 config option，其次是 unstable 的 models.availableModels。
+func (r acpSessionResult) modelList() *acpModels {
+	if models := acpModelsFromConfig(r.ConfigOptions); models != nil {
+		return models
+	}
+	if r.Models == nil || len(r.Models.AvailableModels) == 0 {
+		return nil
+	}
+	models := &acpModels{current: r.Models.CurrentModelID}
+	for _, item := range r.Models.AvailableModels {
+		models.options = append(models.options, modelOption{ID: item.ModelID, Name: item.Name, Description: item.Description})
+	}
+	models.setCurrent(models.current)
+	return models
 }
 
 func (r acpSessionResult) mode() string {
@@ -484,7 +511,12 @@ func (r acpSessionResult) mode() string {
 	return acpModeOf(current, r.ConfigOptions)
 }
 
+func (r acpSessionResult) effort() string { return acpEffortOf(r.ConfigOptions) }
+
 func (r acpSessionResult) model() string {
+	if models := r.modelList(); models != nil {
+		return models.current
+	}
 	if r.Models != nil {
 		return r.Models.CurrentModelID
 	}
@@ -507,17 +539,24 @@ func (b *acpBackend) NewSession(cwd string, rt runtimeOverrides) (SessionInfo, e
 	if result.SessionID == "" {
 		return SessionInfo{}, fmt.Errorf("backend %s returned no sessionId", b.cfg.Name)
 	}
-	b.adopt(result.SessionID, result.mode())
-	return SessionInfo{ID: result.SessionID, CWD: params["cwd"].(string), Model: result.model()}, nil
+	b.adopt(result.SessionID, result)
+	return SessionInfo{ID: result.SessionID, CWD: params["cwd"].(string), Model: result.model(), ReasoningEffort: result.effort()}, nil
 }
 
-// adopt 切換到新的 session：清掉前一個 session 的 turn / tool 狀態並更新 mode 警示。
-func (b *acpBackend) adopt(sessionID, mode string) {
+// adopt 切換到新的 session：清掉前一個 session 的 turn / tool 狀態，更新 mode 警示與 model 清單。
+// result 沒有 model 資訊時（例如 session/load 回 null）沿用先前的清單。
+func (b *acpBackend) adopt(sessionID string, result acpSessionResult) {
 	b.mu.Lock()
 	b.sessionID = sessionID
 	b.turn = nil
 	b.tools = map[string]*acpTool{}
-	events := b.setModeLocked(mode)
+	events := b.setModeLocked(result.mode())
+	if models := result.modelList(); models != nil {
+		b.setModelsLocked(models)
+	}
+	if effort := result.effort(); effort != "" {
+		b.effort = effort
+	}
 	b.mu.Unlock()
 	b.sendAll(events)
 }
@@ -592,8 +631,8 @@ func (b *acpBackend) resumeSession(id, cwd string, quiet bool) (SessionInfo, err
 		}
 		return SessionInfo{}, err
 	}
-	b.adopt(id, result.mode())
-	info := SessionInfo{ID: id, CWD: params["cwd"].(string), Model: result.model()}
+	b.adopt(id, result)
+	info := SessionInfo{ID: id, CWD: params["cwd"].(string), Model: result.model(), ReasoningEffort: result.effort()}
 	if replay != nil && !quiet {
 		info.Turns = replay.history()
 	}
@@ -996,6 +1035,87 @@ func (b *acpBackend) handleUpdate(raw json.RawMessage) {
 	b.sendAll(events)
 }
 
+// setModelsLocked 換上新的 model 清單並同步 capability；回傳 current 是否改變。
+func (b *acpBackend) setModelsLocked(models *acpModels) (changed bool) {
+	changed = b.models != nil && b.models.current != models.current
+	b.models = models
+	b.caps.ModelList = len(models.options) > 0
+	b.caps.ModelSwitch = len(models.options) > 0
+	return changed
+}
+
+// ModelOptions 回傳 agent 目前回報的 model 清單（已標記 current）。
+func (b *acpBackend) ModelOptions() ([]modelOption, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.models == nil {
+		return nil, fmt.Errorf("backend %s did not report any models", b.cfg.Name)
+	}
+	return append([]modelOption(nil), b.models.options...), nil
+}
+
+// SetModel 切換 session 的 model：有 model config option 時用 session/set_config_option，
+// 否則（unstable models API）用 session/set_model。id 不在清單內時不送出任何 request。
+func (b *acpBackend) SetModel(sessionID, id string) (string, error) {
+	conn, err := b.connection()
+	if err != nil {
+		return "", err
+	}
+	b.mu.Lock()
+	models := b.models
+	var option modelOption
+	var found bool
+	if models != nil {
+		option, found = models.resolve(strings.TrimSpace(id))
+	}
+	configID := ""
+	if models != nil {
+		configID = models.configID
+	}
+	if sessionID == "" {
+		sessionID = b.sessionID
+	}
+	valid := ""
+	if models != nil {
+		valid = models.ids()
+	}
+	b.mu.Unlock()
+	switch {
+	case models == nil:
+		return "", fmt.Errorf("backend %s does not support switching models", b.cfg.Name)
+	case !found:
+		return "", fmt.Errorf("unknown model %q; available: %s", id, valid)
+	}
+
+	if configID == "" {
+		err = conn.call(context.Background(), acpSessionTimeout, "session/set_model",
+			map[string]any{"sessionId": sessionID, "modelId": option.ID}, nil)
+	} else {
+		var result struct {
+			ConfigOptions []acpConfigOption `json:"configOptions"`
+		}
+		err = conn.call(context.Background(), acpSessionTimeout, "session/set_config_option",
+			map[string]any{"sessionId": sessionID, "configId": configID, "value": option.ID}, &result)
+		if err == nil {
+			if updated := acpModelsFromConfig(result.ConfigOptions); updated != nil {
+				b.mu.Lock()
+				b.setModelsLocked(updated)
+				b.mu.Unlock()
+				return option.ID, nil
+			}
+		}
+	}
+	if err != nil {
+		return "", err
+	}
+	b.mu.Lock()
+	if b.models != nil {
+		b.models.setCurrent(option.ID)
+	}
+	b.mu.Unlock()
+	return option.ID, nil
+}
+
 // setModeLocked 更新 permission mode；警示文字改變時回傳 EvModeWarning。
 func (b *acpBackend) setModeLocked(mode string) []Event {
 	if mode == "" || mode == b.mode {
@@ -1073,6 +1193,13 @@ func (b *acpBackend) translateLocked(u acpUpdate) []Event {
 		events = append(events, b.setModeLocked(u.CurrentModeID)...)
 	case "config_option_update":
 		events = append(events, b.setModeLocked(acpModeOf("", u.ConfigOptions))...)
+		if models := acpModelsFromConfig(u.ConfigOptions); models != nil && b.setModelsLocked(models) {
+			events = append(events, EvModelChanged{Model: models.current})
+		}
+		if effort := acpEffortOf(u.ConfigOptions); effort != "" && effort != b.effort {
+			b.effort = effort
+			events = append(events, EvEffortChanged{Effort: effort})
+		}
 	default:
 		b.unknown[u.Kind]++
 	}

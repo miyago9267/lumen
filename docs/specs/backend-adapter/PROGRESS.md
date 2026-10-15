@@ -174,3 +174,16 @@ T-P3-11（M）以假 `codex`（`LUMEN_CODEX_BIN`）確認 `LUMEN_BACKEND=codex` 
 - codex 失敗原因已能顯示（真實 400「gpt-6-sol not supported with ChatGPT account」）。
 - T-P1-09 BLOCKED：真實 codex 的 turn/interrupt、fork、`/goal`、compact 執行無法驗證，因 Miyago 的 codex config model `gpt-6-sol` 被 ChatGPT-account auth 拒絕（`codex exec` 同樣錯誤）。需 Miyago 修正 codex model 設定後重跑。
 - Gemini runtime 未驗證（無 auth；IneligibleTierError）。
+
+## /model 支援（ACP）2026-10-15
+
+Probe：真實 `claude-agent-acp@0.90.0`，只送 `initialize` + `session/new` + `session/set_config_option`（沒有 `session/prompt`，不花 model 額度）。
+
+- `session/new` result keys：`sessionId, modes, configOptions`；沒有 `models`（unstable `models.availableModels` / `session/set_model` 在此版本不存在，Lumen 僅保留為 fallback）。
+- `configOptions` 內 `{id:"model", category:"model", type:"select", currentValue:"opus", options:[{value,name,description}]}`，**flat**（非 group）。13 個選項：`default, opus, fable, sonnet, haiku, claude-haiku-4-5-20251001, claude-sonnet-5, claude-opus-5, claude-fable-5, claude-opus-4-8, claude-opus-4-7, claude-opus-4-6, claude-sonnet-4-6`；`value` 是 alias（`opus`）或完整 model id，`name` 是人類可讀（`Opus 5.5`）。清單依帳號而定。
+- 其他 config option：`mode`(category mode)、`effort`(thought_level)、`fast`(model_config)、`agent`（無 category）。
+- `session/set_config_option{sessionId,configId:"model",value}` 回 `{configOptions:[...全部...]}`，`currentValue` 已更新；未帶 `models`。
+- Lumen 實作：ModelList/ModelSwitch caps 在 session/new|load|resume 的 result 或 `config_option_update` 含 category=model 的 option 時為 true；grouped options 會展平；`SetModel` 先在本地驗證 id（精確，其次不分大小寫比對 value / name），未知時回 `unknown model "x"; available: ...` 且不送 request。`config_option_update` 改變 current 時送 `EvModelChanged`，UI 更新顯示的 model。
+- `/model`（無參數 / `list`）與 `/model <id>` 走 backend-neutral 的 `ModelPicker` / `ModelSetter`；codex 實作 `ModelPicker`（`model/list`），沒有 `ModelSetter`，`/model <id>` 維持 per-turn override。`/model ` 的參數補全（Tab 補 id、Enter 執行）在 codex 與 ACP 共用；ACP 的 dynamic catalog 在 `ModelList` 為 true 時多出 `/model`。
+- 發現（未處理）：以真實 adapter 跑 `go test`，測試結束後 adapter 的子孫 process 仍持有 stdout pipe，使 `go test ... | tail` 不返回（`Close` 後）。測試本身 PASS；是否為 Close 沒清掉 process group 待查。
+- 未驗證：live TUI 手動操作 `/model` + Tab（只用 unit/fake-adapter 測試與真實 adapter 的 backend 層 probe 覆蓋）。

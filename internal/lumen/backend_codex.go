@@ -382,6 +382,7 @@ type codexBackend struct {
 var (
 	_ Backend     = (*codexBackend)(nil)
 	_ CodexExtras = (*codexBackend)(nil)
+	_ ModelPicker = (*codexBackend)(nil)
 )
 
 func newCodexBackend(client *appServer, sessionID string) *codexBackend {
@@ -511,6 +512,23 @@ func (b *codexBackend) SetGoal(id, objective string) (map[string]any, error) {
 func (b *codexBackend) ClearGoal(id string) error { return b.client.ClearThreadGoal(id) }
 
 func (b *codexBackend) ListModels() ([]codexModel, error) { return b.client.ListModels() }
+
+// ModelOptions 把 model/list 轉成 backend-neutral 的清單；ID 是 --model / turn override 使用的值。
+func (b *codexBackend) ModelOptions() ([]modelOption, error) {
+	models, err := b.client.ListModels()
+	if err != nil {
+		return nil, err
+	}
+	options := make([]modelOption, 0, len(models))
+	for _, model := range models {
+		name := valueOr(model.DisplayName, valueOr(model.Model, model.ID))
+		if model.Hidden {
+			name += " · hidden"
+		}
+		options = append(options, modelOption{ID: valueOr(model.Model, model.ID), Name: name})
+	}
+	return options, nil
+}
 
 func (b *codexBackend) ListSkills(cwd string) ([]codexSkillEntry, error) {
 	return b.client.ListSkills(cwd)

@@ -275,8 +275,8 @@ type CodexExtras interface {
 | `Goal` | true | false |
 | `Review` | true | false |
 | `Compact` | true | false（`compaction_update` 只是顯示，不是觸發；agent 自己的 `/compact` 走 slash command） |
-| `ModelList` | true（`model/list`） | `configOptions` 有 `category: model` |
-| `ModelSwitch` | true（per-turn override） | 有 model config option 時 `session/set_config_option` |
+| `ModelList` | true（`model/list`） | `configOptions` 有 `category: model`（真實 claude adapter 0.90.0 已驗證，flat options）；沒有時退回 unstable `models.availableModels` |
+| `ModelSwitch` | true（per-turn override） | 有 model config option 時 `session/set_config_option`；fallback `session/set_model` |
 | `SlashCatalog` | `static`（現行 catalog） | `dynamic`（`available_commands_update`） |
 | `UserInput` | true | false（spike 後可能依 elicitation 改） |
 | `TokenBreakdown` | true | false（只有 `used/size/cost`） |

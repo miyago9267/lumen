@@ -43,6 +43,10 @@ type fakeACPAgent struct {
 	nextReqID int
 
 	cancel chan struct{}
+
+	modelMu      sync.Mutex
+	currentModel string // 空字串代表 envOr("FAKEACP_MODEL", "opus")
+	effort       string // 空字串代表 FAKEACP_EFFORT（未設定時 configOptions 沒有 effort）
 }
 
 func envOr(key, fallback string) string {
@@ -174,6 +178,10 @@ func (a *fakeACPAgent) dispatch(line []byte) {
 		a.load(message)
 	case "session/resume":
 		a.reply(message.ID, a.sessionResult(""))
+	case "session/set_config_option":
+		a.setConfigOption(message)
+	case "session/set_model":
+		a.setSessionModel(message)
 	case "session/list":
 		a.list(message)
 	case "session/cancel":
@@ -236,7 +244,110 @@ func (a *fakeACPAgent) sessionResult(id string) map[string]any {
 	if id != "" {
 		result["sessionId"] = id
 	}
+	a.addModels(result)
 	return result
+}
+
+// fakeACPModels 是 fake adapter 提供的 model 清單（value / name / description）。
+var fakeACPModels = [][3]string{
+	{"default", "Default (recommended)", "Opus 5.5"},
+	{"opus", "Opus 5.5", "complex work"},
+	{"sonnet", "Sonnet 5.5", "simpler tasks"},
+}
+
+func (a *fakeACPAgent) model() string {
+	a.modelMu.Lock()
+	defer a.modelMu.Unlock()
+	return valueOr(a.currentModel, envOr("FAKEACP_MODEL", "opus"))
+}
+
+func (a *fakeACPAgent) setModel(id string) {
+	a.modelMu.Lock()
+	a.currentModel = id
+	a.modelMu.Unlock()
+}
+
+func (a *fakeACPAgent) currentEffort() string {
+	a.modelMu.Lock()
+	defer a.modelMu.Unlock()
+	return valueOr(a.effort, os.Getenv("FAKEACP_EFFORT"))
+}
+
+func (a *fakeACPAgent) setEffort(value string) {
+	a.modelMu.Lock()
+	a.effort = value
+	a.modelMu.Unlock()
+}
+
+func fakeACPModelOption(current string, grouped bool) map[string]any {
+	var flat []any
+	for _, item := range fakeACPModels {
+		flat = append(flat, map[string]any{"value": item[0], "name": item[1], "description": item[2]})
+	}
+	options := flat
+	if grouped {
+		options = []any{
+			map[string]any{"group": "recommended", "name": "Recommended", "options": flat[:2]},
+			map[string]any{"group": "other", "name": "Other", "options": flat[2:]},
+		}
+	}
+	return map[string]any{"id": "model", "name": "Model", "category": "model", "type": "select", "currentValue": current, "options": options}
+}
+
+// configOptions 回傳 fake adapter 目前的 configOptions（mode 加上 model）。
+func (a *fakeACPAgent) configOptions() []any {
+	options := []any{
+		map[string]any{"id": "mode", "name": "Mode", "category": "mode", "type": "select", "currentValue": envOr("FAKEACP_MODE", "default"), "options": []any{}},
+		fakeACPModelOption(a.model(), os.Getenv("FAKEACP_MODELS") == "grouped"),
+	}
+	if effort := a.currentEffort(); effort != "" {
+		options = append(options, map[string]any{"id": "effort", "name": "Effort", "category": "thought_level", "type": "select", "currentValue": effort,
+			"options": []any{map[string]any{"value": "low", "name": "Low"}, map[string]any{"value": "high", "name": "High"}, map[string]any{"value": "xhigh", "name": "Extra high"}}})
+	}
+	return options
+}
+
+// addModels 依 FAKEACP_MODELS（config | grouped | legacy；空 = 沒有 model 資訊）加上 model 欄位。
+func (a *fakeACPAgent) addModels(result map[string]any) {
+	switch os.Getenv("FAKEACP_MODELS") {
+	case "config", "grouped":
+		result["configOptions"] = a.configOptions()
+	case "legacy":
+		var available []any
+		for _, item := range fakeACPModels {
+			available = append(available, map[string]any{"modelId": item[0], "name": item[1], "description": item[2]})
+		}
+		result["models"] = map[string]any{"currentModelId": a.model(), "availableModels": available}
+	}
+}
+
+func (a *fakeACPAgent) setConfigOption(message fakeACPMessage) {
+	var params struct {
+		ConfigID string `json:"configId"`
+		Value    string `json:"value"`
+	}
+	json.Unmarshal(message.Params, &params)
+	if os.Getenv("FAKEACP_SET_ERROR") != "" {
+		a.replyError(message.ID, -32602, "invalid value")
+		return
+	}
+	if params.ConfigID == "model" {
+		a.setModel(params.Value)
+	}
+	a.reply(message.ID, map[string]any{"configOptions": a.configOptions()})
+}
+
+func (a *fakeACPAgent) setSessionModel(message fakeACPMessage) {
+	var params struct {
+		ModelID string `json:"modelId"`
+	}
+	json.Unmarshal(message.Params, &params)
+	if os.Getenv("FAKEACP_SET_ERROR") != "" {
+		a.replyError(message.ID, -32602, "invalid model")
+		return
+	}
+	a.setModel(params.ModelID)
+	a.reply(message.ID, map[string]any{})
 }
 
 func (a *fakeACPAgent) load(message fakeACPMessage) {
@@ -349,6 +460,19 @@ func (a *fakeACPAgent) prompt(message fakeACPMessage) {
 		a.message(session, "Hello ")
 		a.message(session, "world")
 		done("end_turn")
+	case text == "split":
+		// 連續 chunk：不夾 tool，Lumen 必須接成同一個 assistant block。
+		a.message(session, "還")
+		a.message(session, "沒驗證：")
+		a.message(session, "go test 尚未跑")
+		done("end_turn")
+	case text == "interleave":
+		// adapter 真的送 text -> tool -> text：中間的 tool 是邊界，兩段文字各自成 block。
+		a.message(session, "還")
+		a.update(session, map[string]any{"sessionUpdate": "tool_call", "toolCallId": "ti", "title": "go test", "kind": "execute", "status": "pending"})
+		a.update(session, map[string]any{"sessionUpdate": "tool_call_update", "toolCallId": "ti", "status": "completed"})
+		a.message(session, "沒驗證：")
+		done("end_turn")
 	case text == "tools":
 		a.update(session, map[string]any{"sessionUpdate": "tool_call", "toolCallId": "t1", "title": "ls -la", "kind": "execute", "status": "pending", "rawInput": map[string]any{}})
 		a.update(session, map[string]any{"sessionUpdate": "tool_call_update", "toolCallId": "t1", "status": "in_progress", "rawInput": map[string]any{"command": "ls -la"}})
@@ -369,6 +493,16 @@ func (a *fakeACPAgent) prompt(message fakeACPMessage) {
 		a.update(session, map[string]any{"sessionUpdate": "future_update_kind"})
 		a.update(session, map[string]any{"sessionUpdate": "another_future_kind"})
 		a.message(session, "meta done")
+		done("end_turn")
+	case text == "modelpush":
+		a.setModel("sonnet")
+		a.update(session, map[string]any{"sessionUpdate": "config_option_update", "configOptions": a.configOptions()})
+		a.message(session, "model pushed")
+		done("end_turn")
+	case text == "effortpush":
+		a.setEffort("xhigh")
+		a.update(session, map[string]any{"sessionUpdate": "config_option_update", "configOptions": a.configOptions()})
+		a.message(session, "effort pushed")
 		done("end_turn")
 	case text == "perm":
 		a.message(session, "outcome:"+permissionOutcomeText(a.permissionRequest(session)))

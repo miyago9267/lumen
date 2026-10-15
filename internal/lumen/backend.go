@@ -78,6 +78,25 @@ type CodexExtras interface {
 	Call(method string, params any, target any) error
 }
 
+// modelOption 是 /model 可選的一個 model；ID 是送回 backend 的值。
+type modelOption struct {
+	ID          string
+	Name        string
+	Description string
+	Current     bool // backend 知道目前 model 時才會標；codex 由 UI 以 effective model 比對
+}
+
+// ModelPicker 由能列出 model 的 backend 實作（codex 的 model/list、ACP 的 model config option）。
+type ModelPicker interface {
+	ModelOptions() ([]modelOption, error)
+}
+
+// ModelSetter 由能在 session 內切換 model 的 backend 實作（ACP）。
+// 回傳 backend 認可的 model ID；未實作時（codex）/model <id> 退回 per-turn override。
+type ModelSetter interface {
+	SetModel(sessionID, id string) (string, error)
+}
+
 // Event 是 backend 送給 UI 的 normalized event（sealed interface）。
 type Event interface{ isEvent() }
 
@@ -231,6 +250,12 @@ type EvModeWarning struct {
 	Text string
 }
 
+// EvModelChanged 回報 backend 端改變了目前 model（例如 ACP agent 推送 config_option_update）。
+type EvModelChanged struct{ Model string }
+
+// EvEffortChanged 回報 backend 端改變了目前 reasoning effort（ACP config_option_update 的 thought_level）。
+type EvEffortChanged struct{ Effort string }
+
 // EvTurnCompleted.Label 是 UI 逐字顯示的原始字串（空字串視為 completed）。
 type EvTurnCompleted struct {
 	TurnID string
@@ -297,3 +322,5 @@ func (EvRequestRejected) isEvent()    {}
 func (EvConnectionLost) isEvent()     {}
 func (EvCommandsUpdated) isEvent()    {}
 func (EvModeWarning) isEvent()        {}
+func (EvModelChanged) isEvent()       {}
+func (EvEffortChanged) isEvent()      {}
