@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"sync"
@@ -107,15 +108,16 @@ type acpBackend struct {
 	perms     map[string]*acpPermission
 	replay    *acpReplay
 	mode      string
-	models    *acpModels // nil = agent 沒有回報 model 清單
-	effort    string     // 最後已知的 thought_level；空 = agent 沒有回報
-	unknown   map[string]int
+	options   []ConfigOption // 最後一次 agent 回報的 select option（immutable，整份取代）
+	// legacyModel 為 true 表示 category=model 的 option 是由 unstable models.availableModels 合成，
+	// 以 session/set_model 切換。
+	legacyModel bool
+	unknown     map[string]int
 }
 
 var (
-	_ Backend     = (*acpBackend)(nil)
-	_ ModelPicker = (*acpBackend)(nil)
-	_ ModelSetter = (*acpBackend)(nil)
+	_ Backend      = (*acpBackend)(nil)
+	_ ConfigSetter = (*acpBackend)(nil)
 )
 
 func newACPBackend(cfg acpConfig) *acpBackend {
@@ -487,40 +489,32 @@ type acpSessionResult struct {
 	} `json:"models"`
 }
 
-// modelList 優先使用 category=model 的 config option，其次是 unstable 的 models.availableModels。
-func (r acpSessionResult) modelList() *acpModels {
-	if models := acpModelsFromConfig(r.ConfigOptions); models != nil {
-		return models
+// options 取出 session 結果的 select option；沒有 category=model 的 option 時，把 unstable
+// models.availableModels 合成一個 id=model 的 option（legacy=true，以 session/set_model 切換）。
+func (r acpSessionResult) options() (options []ConfigOption, legacy bool) {
+	options = acpConfigOptions(r.ConfigOptions)
+	if configValue(options, "model") != "" || r.Models == nil || len(r.Models.AvailableModels) == 0 {
+		return options, false
 	}
-	if r.Models == nil || len(r.Models.AvailableModels) == 0 {
-		return nil
-	}
-	models := &acpModels{current: r.Models.CurrentModelID}
+	model := ConfigOption{ID: "model", Name: "Model", Category: "model"}
 	for _, item := range r.Models.AvailableModels {
-		models.options = append(models.options, modelOption{ID: item.ModelID, Name: item.Name, Description: item.Description})
+		model.Values = append(model.Values, modelOption{ID: item.ModelID, Name: item.Name, Description: item.Description})
 	}
-	models.setCurrent(models.current)
-	return models
+	return append(options, model.withCurrent(r.Models.CurrentModelID)), true
 }
 
-func (r acpSessionResult) mode() string {
+func (r acpSessionResult) mode(options []ConfigOption) string {
 	current := ""
 	if r.Modes != nil {
 		current = r.Modes.CurrentModeID
 	}
-	return acpModeOf(current, r.ConfigOptions)
+	return acpModeOf(current, options)
 }
 
-func (r acpSessionResult) effort() string { return acpEffortOf(r.ConfigOptions) }
-
-func (r acpSessionResult) model() string {
-	if models := r.modelList(); models != nil {
-		return models.current
-	}
-	if r.Models != nil {
-		return r.Models.CurrentModelID
-	}
-	return ""
+// info 是 UI 看到的 session；Model / ReasoningEffort 取自 config option 的 category。
+func (r acpSessionResult) info(id, cwd string) SessionInfo {
+	options, _ := r.options()
+	return SessionInfo{ID: id, CWD: cwd, Model: configValue(options, "model"), ReasoningEffort: configValue(options, "thought_level")}
 }
 
 func (b *acpBackend) NewSession(cwd string, rt runtimeOverrides) (SessionInfo, error) {
@@ -540,22 +534,23 @@ func (b *acpBackend) NewSession(cwd string, rt runtimeOverrides) (SessionInfo, e
 		return SessionInfo{}, fmt.Errorf("backend %s returned no sessionId", b.cfg.Name)
 	}
 	b.adopt(result.SessionID, result)
-	return SessionInfo{ID: result.SessionID, CWD: params["cwd"].(string), Model: result.model(), ReasoningEffort: result.effort()}, nil
+	return result.info(result.SessionID, params["cwd"].(string)), nil
 }
 
-// adopt 切換到新的 session：清掉前一個 session 的 turn / tool 狀態，更新 mode 警示與 model 清單。
-// result 沒有 model 資訊時（例如 session/load 回 null）沿用先前的清單。
+// adopt 切換到新的 session：清掉前一個 session 的 turn / tool 狀態，更新 mode 警示與 config option 清單。
+// result 沒有任何 option 時（例如 session/load 回 null）沿用先前的清單。
 func (b *acpBackend) adopt(sessionID string, result acpSessionResult) {
 	b.mu.Lock()
 	b.sessionID = sessionID
 	b.turn = nil
 	b.tools = map[string]*acpTool{}
-	events := b.setModeLocked(result.mode())
-	if models := result.modelList(); models != nil {
-		b.setModelsLocked(models)
-	}
-	if effort := result.effort(); effort != "" {
-		b.effort = effort
+	options, legacy := result.options()
+	var events []Event
+	if len(options) > 0 {
+		b.legacyModel = legacy
+		events = b.setOptionsLocked(options, result.mode(options), true)
+	} else {
+		events = b.setModeLocked(result.mode(nil))
 	}
 	b.mu.Unlock()
 	b.sendAll(events)
@@ -632,7 +627,7 @@ func (b *acpBackend) resumeSession(id, cwd string, quiet bool) (SessionInfo, err
 		return SessionInfo{}, err
 	}
 	b.adopt(id, result)
-	info := SessionInfo{ID: id, CWD: params["cwd"].(string), Model: result.model(), ReasoningEffort: result.effort()}
+	info := result.info(id, params["cwd"].(string))
 	if replay != nil && !quiet {
 		info.Turns = replay.history()
 	}
@@ -1035,85 +1030,119 @@ func (b *acpBackend) handleUpdate(raw json.RawMessage) {
 	b.sendAll(events)
 }
 
-// setModelsLocked 換上新的 model 清單並同步 capability；回傳 current 是否改變。
-func (b *acpBackend) setModelsLocked(models *acpModels) (changed bool) {
-	changed = b.models != nil && b.models.current != models.current
-	b.models = models
-	b.caps.ModelList = len(models.options) > 0
-	b.caps.ModelSwitch = len(models.options) > 0
-	return changed
+// setOptionsLocked 整份換上 agent 回報的 option 並同步 capability，回傳要送的 events：mode 警示（mode 改變時）
+// 與 EvConfigOptions（force 或內容改變時）。options 為空代表這次回報沒有 option 資訊，沿用先前清單。
+// legacy 合成的 model option 在新清單沒有 model 時保留。
+func (b *acpBackend) setOptionsLocked(options []ConfigOption, mode string, force bool) []Event {
+	events := b.setModeLocked(mode)
+	if len(options) == 0 {
+		return events
+	}
+	if b.legacyModel && configValue(options, "model") == "" {
+		if previous, ok := b.categoryOptionLocked("model"); ok {
+			options = append(append([]ConfigOption(nil), options...), previous)
+		}
+	}
+	changed := !reflect.DeepEqual(b.options, options)
+	b.options = options
+	b.caps.ModelList = false
+	if model, ok := b.categoryOptionLocked("model"); ok {
+		b.caps.ModelList = len(model.Values) > 0
+	}
+	if changed || force {
+		events = append(events, EvConfigOptions{Options: options})
+	}
+	return events
 }
 
-// ModelOptions 回傳 agent 目前回報的 model 清單（已標記 current）。
-func (b *acpBackend) ModelOptions() ([]modelOption, error) {
+func (b *acpBackend) categoryOptionLocked(category string) (ConfigOption, bool) {
+	for _, option := range b.options {
+		if option.Category == category {
+			return option, true
+		}
+	}
+	return ConfigOption{}, false
+}
+
+// optionsWithCurrentLocked 回傳指定 category 的第一個 option 改成 value 的複本；沒有該 category 時回傳 nil。
+func (b *acpBackend) optionsWithCurrentLocked(category, value string) []ConfigOption {
+	for i, option := range b.options {
+		if option.Category == category {
+			updated := append([]ConfigOption(nil), b.options...)
+			updated[i] = option.withCurrent(value)
+			return updated
+		}
+	}
+	return nil
+}
+
+// ConfigOptions 回傳 agent 目前回報的 select option（供診斷與測試）。
+func (b *acpBackend) ConfigOptions() []ConfigOption {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if b.models == nil {
-		return nil, fmt.Errorf("backend %s did not report any models", b.cfg.Name)
-	}
-	return append([]modelOption(nil), b.models.options...), nil
+	return append([]ConfigOption(nil), b.options...)
 }
 
-// SetModel 切換 session 的 model：有 model config option 時用 session/set_config_option，
-// 否則（unstable models API）用 session/set_model。id 不在清單內時不送出任何 request。
-func (b *acpBackend) SetModel(sessionID, id string) (string, error) {
+// SetConfigOption 切換一個 select option：value 先在本地解析（見 ConfigOption.Resolve），未知或模糊時不送任何
+// request。一般 option 用 session/set_config_option 並套用回應的完整清單；legacy model 用 session/set_model。
+// 只能由使用者明確下的 command 呼叫；mode category 也一樣，沒有任何自動路徑。
+func (b *acpBackend) SetConfigOption(sessionID, id, value string) (string, error) {
 	conn, err := b.connection()
 	if err != nil {
 		return "", err
 	}
 	b.mu.Lock()
-	models := b.models
-	var option modelOption
-	var found bool
-	if models != nil {
-		option, found = models.resolve(strings.TrimSpace(id))
-	}
-	configID := ""
-	if models != nil {
-		configID = models.configID
-	}
+	option, found := findConfigOptionByID(b.options, id)
+	legacy := b.legacyModel && option.Category == "model"
 	if sessionID == "" {
 		sessionID = b.sessionID
 	}
-	valid := ""
-	if models != nil {
-		valid = models.ids()
+	available := make([]string, 0, len(b.options))
+	for _, item := range b.options {
+		available = append(available, item.ID)
 	}
 	b.mu.Unlock()
-	switch {
-	case models == nil:
-		return "", fmt.Errorf("backend %s does not support switching models", b.cfg.Name)
-	case !found:
-		return "", fmt.Errorf("unknown model %q; available: %s", id, valid)
+	if !found {
+		return "", fmt.Errorf("unknown option %q; available: %s", id, strings.Join(available, ", "))
+	}
+	chosen, err := option.Resolve(value)
+	if err != nil {
+		return "", err
 	}
 
-	if configID == "" {
+	var result struct {
+		ConfigOptions []acpConfigOption `json:"configOptions"`
+	}
+	if legacy {
 		err = conn.call(context.Background(), acpSessionTimeout, "session/set_model",
-			map[string]any{"sessionId": sessionID, "modelId": option.ID}, nil)
+			map[string]any{"sessionId": sessionID, "modelId": chosen.ID}, nil)
 	} else {
-		var result struct {
-			ConfigOptions []acpConfigOption `json:"configOptions"`
-		}
 		err = conn.call(context.Background(), acpSessionTimeout, "session/set_config_option",
-			map[string]any{"sessionId": sessionID, "configId": configID, "value": option.ID}, &result)
-		if err == nil {
-			if updated := acpModelsFromConfig(result.ConfigOptions); updated != nil {
-				b.mu.Lock()
-				b.setModelsLocked(updated)
-				b.mu.Unlock()
-				return option.ID, nil
-			}
-		}
+			map[string]any{"sessionId": sessionID, "configId": option.ID, "value": chosen.ID}, &result)
 	}
 	if err != nil {
 		return "", err
 	}
+
 	b.mu.Lock()
-	if b.models != nil {
-		b.models.setCurrent(option.ID)
+	updated := acpConfigOptions(result.ConfigOptions)
+	if len(updated) == 0 {
+		// 回應沒有帶清單（例如 set_model）：只在本地改這個 option 的 current。
+		updated = append([]ConfigOption(nil), b.options...)
+		for i := range updated {
+			if updated[i].ID == option.ID {
+				updated[i] = updated[i].withCurrent(chosen.ID)
+			}
+		}
 	}
+	mode := ""
+	if option.Category == "mode" {
+		mode = chosen.ID
+	}
+	events := b.setOptionsLocked(updated, acpModeOf(mode, updated), false)
 	b.mu.Unlock()
-	return option.ID, nil
+	b.sendAll(events)
+	return chosen.ID, nil
 }
 
 // setModeLocked 更新 permission mode；警示文字改變時回傳 EvModeWarning。
@@ -1190,16 +1219,11 @@ func (b *acpBackend) translateLocked(u acpUpdate) []Event {
 			events = append(events, EvSessionTitle{SessionID: b.sessionID, Title: *u.Title})
 		}
 	case "current_mode_update":
-		events = append(events, b.setModeLocked(u.CurrentModeID)...)
+		// legacy modes API：同步 mode option 的 current，讓 header 與 /mode 的清單一致。
+		events = append(events, b.setOptionsLocked(b.optionsWithCurrentLocked("mode", u.CurrentModeID), u.CurrentModeID, false)...)
 	case "config_option_update":
-		events = append(events, b.setModeLocked(acpModeOf("", u.ConfigOptions))...)
-		if models := acpModelsFromConfig(u.ConfigOptions); models != nil && b.setModelsLocked(models) {
-			events = append(events, EvModelChanged{Model: models.current})
-		}
-		if effort := acpEffortOf(u.ConfigOptions); effort != "" && effort != b.effort {
-			b.effort = effort
-			events = append(events, EvEffortChanged{Effort: effort})
-		}
+		options := acpConfigOptions(u.ConfigOptions)
+		events = append(events, b.setOptionsLocked(options, acpModeOf("", options), false)...)
 	default:
 		b.unknown[u.Kind]++
 	}

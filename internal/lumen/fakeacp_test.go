@@ -47,6 +47,9 @@ type fakeACPAgent struct {
 	modelMu      sync.Mutex
 	currentModel string // 空字串代表 envOr("FAKEACP_MODEL", "opus")
 	effort       string // 空字串代表 FAKEACP_EFFORT（未設定時 configOptions 沒有 effort）
+	noEffort     bool   // true = configOptions 不再有 effort（模擬換到不支援 effort 的 model）
+	mode         string // 空字串代表 envOr("FAKEACP_MODE", "default")
+	style        string // 空字串代表 "quiet"；只有 FAKEACP_EXTRA=1 才有 style option
 }
 
 func envOr(key, fallback string) string {
@@ -237,7 +240,7 @@ func (a *fakeACPAgent) initialize(message fakeACPMessage) {
 func (a *fakeACPAgent) sessionResult(id string) map[string]any {
 	result := map[string]any{
 		"modes": map[string]any{
-			"currentModeId":  envOr("FAKEACP_MODE", "default"),
+			"currentModeId":  a.currentMode(),
 			"availableModes": []any{map[string]any{"id": "default"}, map[string]any{"id": "plan"}},
 		},
 	}
@@ -270,6 +273,9 @@ func (a *fakeACPAgent) setModel(id string) {
 func (a *fakeACPAgent) currentEffort() string {
 	a.modelMu.Lock()
 	defer a.modelMu.Unlock()
+	if a.noEffort {
+		return ""
+	}
 	return valueOr(a.effort, os.Getenv("FAKEACP_EFFORT"))
 }
 
@@ -277,6 +283,37 @@ func (a *fakeACPAgent) setEffort(value string) {
 	a.modelMu.Lock()
 	a.effort = value
 	a.modelMu.Unlock()
+}
+
+func (a *fakeACPAgent) currentMode() string {
+	a.modelMu.Lock()
+	defer a.modelMu.Unlock()
+	return valueOr(a.mode, envOr("FAKEACP_MODE", "default"))
+}
+
+func (a *fakeACPAgent) currentStyle() string {
+	a.modelMu.Lock()
+	defer a.modelMu.Unlock()
+	return valueOr(a.style, "quiet")
+}
+
+// setConfigValue 依 configId 寫入 fake agent 的狀態；未知的 configId 回傳 false。
+func (a *fakeACPAgent) setConfigValue(id, value string) bool {
+	a.modelMu.Lock()
+	defer a.modelMu.Unlock()
+	switch id {
+	case "model":
+		a.currentModel = value
+	case "effort":
+		a.effort = value
+	case "mode":
+		a.mode = value
+	case "style":
+		a.style = value
+	default:
+		return false
+	}
+	return true
 }
 
 func fakeACPModelOption(current string, grouped bool) map[string]any {
@@ -297,12 +334,26 @@ func fakeACPModelOption(current string, grouped bool) map[string]any {
 // configOptions 回傳 fake adapter 目前的 configOptions（mode 加上 model）。
 func (a *fakeACPAgent) configOptions() []any {
 	options := []any{
-		map[string]any{"id": "mode", "name": "Mode", "category": "mode", "type": "select", "currentValue": envOr("FAKEACP_MODE", "default"), "options": []any{}},
+		map[string]any{"id": "mode", "name": "Mode", "description": "Session permission mode", "category": "mode", "type": "select", "currentValue": a.currentMode(),
+			"options": []any{map[string]any{"value": "default", "name": "Manual"}, map[string]any{"value": "plan", "name": "Plan"}, map[string]any{"value": "acceptEdits", "name": "Accept edits"}}},
 		fakeACPModelOption(a.model(), os.Getenv("FAKEACP_MODELS") == "grouped"),
 	}
 	if effort := a.currentEffort(); effort != "" {
 		options = append(options, map[string]any{"id": "effort", "name": "Effort", "category": "thought_level", "type": "select", "currentValue": effort,
 			"options": []any{map[string]any{"value": "low", "name": "Low"}, map[string]any{"value": "high", "name": "High"}, map[string]any{"value": "xhigh", "name": "Extra high"}}})
+	}
+	if os.Getenv("FAKEACP_EXTRA") == "1" {
+		// style 是 Lumen 完全不認得的 option（沒有 category）；brief 是 boolean，必須被忽略。
+		// blast / shout 的 name 相同，用來測 display name 的 ambiguity。
+		options = append(options,
+			map[string]any{"id": "style", "name": "Style", "description": "Reply style", "type": "select", "currentValue": a.currentStyle(),
+				"options": []any{
+					map[string]any{"value": "quiet", "name": "Quiet", "description": "short answers"},
+					map[string]any{"value": "loud", "name": "Loud"},
+					map[string]any{"value": "blast", "name": "Twin"},
+					map[string]any{"value": "shout", "name": "Twin"},
+				}},
+			map[string]any{"id": "brief", "name": "Brief", "type": "boolean", "currentValue": true})
 	}
 	return options
 }
@@ -331,8 +382,9 @@ func (a *fakeACPAgent) setConfigOption(message fakeACPMessage) {
 		a.replyError(message.ID, -32602, "invalid value")
 		return
 	}
-	if params.ConfigID == "model" {
-		a.setModel(params.Value)
+	if !a.setConfigValue(params.ConfigID, params.Value) {
+		a.replyError(message.ID, -32602, "unknown config option")
+		return
 	}
 	a.reply(message.ID, map[string]any{"configOptions": a.configOptions()})
 }
@@ -503,6 +555,20 @@ func (a *fakeACPAgent) prompt(message fakeACPMessage) {
 		a.setEffort("xhigh")
 		a.update(session, map[string]any{"sessionUpdate": "config_option_update", "configOptions": a.configOptions()})
 		a.message(session, "effort pushed")
+		done("end_turn")
+	case text == "configpush":
+		a.setConfigValue("model", "sonnet")
+		a.setConfigValue("effort", "xhigh")
+		a.setConfigValue("style", "loud")
+		a.update(session, map[string]any{"sessionUpdate": "config_option_update", "configOptions": a.configOptions()})
+		a.message(session, "config pushed")
+		done("end_turn")
+	case text == "effortdrop":
+		a.modelMu.Lock()
+		a.noEffort = true
+		a.modelMu.Unlock()
+		a.update(session, map[string]any{"sessionUpdate": "config_option_update", "configOptions": a.configOptions()})
+		a.message(session, "effort dropped")
 		done("end_turn")
 	case text == "perm":
 		a.message(session, "outcome:"+permissionOutcomeText(a.permissionRequest(session)))

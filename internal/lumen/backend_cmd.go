@@ -129,6 +129,8 @@ func (u *ui) adoptSwitchedBackend(session SessionInfo) {
 	u.branch = gitBranch(u.cwd)
 	u.overrides = runtimeOverrides{}
 	u.agentCommands = nil
+	u.configOptions = nil
+	u.modelCache = nil
 	u.permissionNote = ""
 	u.usage = threadUsage{}
 	u.recap = turnRecap{}

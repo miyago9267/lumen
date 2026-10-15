@@ -275,8 +275,7 @@ type CodexExtras interface {
 | `Goal` | true | false |
 | `Review` | true | false |
 | `Compact` | true | false（`compaction_update` 只是顯示，不是觸發；agent 自己的 `/compact` 走 slash command） |
-| `ModelList` | true（`model/list`） | `configOptions` 有 `category: model`（真實 claude adapter 0.90.0 已驗證，flat options）；沒有時退回 unstable `models.availableModels` |
-| `ModelSwitch` | true（per-turn override） | 有 model config option 時 `session/set_config_option`；fallback `session/set_model` |
+| `ModelList` | true（`model/list`） | `configOptions` 有 `category: model` 的 select option（真實 claude adapter 0.90.0 已驗證，flat options）；沒有時把 unstable `models.availableModels` 合成同一種 option。ACP 的切換已不是 capability：所有 select option（含 model）走 `ConfigSetter`，見 `docs/specs/acp-config-options/SPEC.md`（`ModelSwitch` 已移除） |
 | `SlashCatalog` | `static`（現行 catalog） | `dynamic`（`available_commands_update`） |
 | `UserInput` | true | false（spike 後可能依 elicitation 改） |
 | `TokenBreakdown` | true | false（只有 `used/size/cost`） |
@@ -440,7 +439,7 @@ codex  : codex native (codex app-server)
 
 `--model`、`--reasoning-effort`、`--sandbox`、`--approval-policy` 目前是 codex 語意。非 codex backend
 收到這些旗標時**明確報錯**（`flag --sandbox is only supported by backend codex`），不默默忽略。
-ACP 的 model 切換之後再以 `session/set_config_option` 提供（P3 之後，非本 spec 必要）。
+ACP 的 model / effort / mode 等切換已改由 `/<option id>` command 以 `session/set_config_option` 提供，見 `docs/specs/acp-config-options/SPEC.md`；上述旗標仍不支援。
 
 ### `/backend`
 
@@ -518,8 +517,10 @@ T2.0 spike 已實測（2026-10-14，`claude-agent-acp@0.90.0`）；仍標 `unver
 - 只有使用者明確按鍵才能回 `selected`；approval card 預設 focus **不得**落在任何 `allow_*` option。
   （反例：buzz-acp 對每個 request 自動回 `allow_once`，使 `default`/`acceptEdits` 實質等同
   `bypassPermissions`，見 buzz#2884。）
-- Lumen **不送**任何會改變 mode/permission 的 request（`session/set_mode`、對 mode/permission 類
-  `session/set_config_option`），也不傳 bypass flag 或 env。
+- Lumen **不自動送**任何會改變 mode/permission 的 request，也不傳 bypass flag 或 env；不送 `session/set_mode`。
+  唯一例外（`docs/specs/acp-config-options/SPEC.md` D8，2026-10-15）：使用者明確輸入 `/mode <value>` 時，
+  Lumen 送 `session/set_config_option`（mode category）；`mode` 的參數 Enter 不做前綴補全後直接執行，
+  `allowDangerouslySkipPermissions:false` 仍使 `bypassPermissions` 不在可選清單內。
 - 風險（機制見官方文件，T2.0 已對 adapter 實測，結果見下）：Agent SDK 預設 `query()` 會讀取專案
   `.claude/settings.json` 的 allow/deny/ask rules 與 `permissions.defaultMode`，session 起始 mode 可能是
   `auto`（[permissions 文件](https://code.claude.com/docs/en/agent-sdk/permissions)）；若 `claude-agent-acp@0.90.0`
@@ -536,7 +537,8 @@ T2.0 spike 已實測（2026-10-14，`claude-agent-acp@0.90.0`）；仍標 `unver
     `default, acceptEdits, plan, auto, bypassPermissions`。`current_mode_update` 在 runtime 未觀察到（僅見 adapter 原始碼
     `session-mode.js:170`），Lumen 仍須處理。
   - (e) Lumen client 只送：`initialize`、`session/new`、`session/prompt`、`session/list`、`session/load`、`session/resume`、
-    `session/cancel`；不送 `session/set_mode`、`session/set_config_option`、`authenticate`。
+    `session/cancel`；不送 `session/set_mode`、`authenticate`（spike 當時也沒有 `session/set_config_option`；
+    現在只在使用者明確下 `/<option id> <value>` 時才送，見 `acp-config-options`）。
 - **決定（限縮 bypass）：** 對 claude backend，Lumen 在 `session/new`（及 `load`/`resume`）送
   `_meta.claudeCode.options.allowDangerouslySkipPermissions:false`。這只是限制（把 `bypassPermissions` 從
   `availableModes` 移除），**不是**要求變更 mode；不違反「不送 mode-changing request」。

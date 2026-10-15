@@ -391,7 +391,8 @@ type ui struct {
 	cancelAndSend         string
 	commandPopupIndex     int
 	commandPopupDismissed bool
-	modelCache            *modelCandidateCache
+	modelCache            *modelCandidateCache // codex /model 補全的 ModelOptions 快取
+	configOptions         []ConfigOption       // backend 宣告的 select option；catalog、header、/status 都由它長出
 	lastOutput            time.Time
 	lastCtrlC             time.Time
 	branch                string
@@ -551,7 +552,7 @@ func (u *ui) renderHeader() {
 	approval := u.effectiveApproval()
 	sandbox := u.effectiveSandbox()
 	fmt.Fprintf(u.out, "%s%sLumen%s", bold, cyan, reset)
-	for _, value := range []string{model, effort} {
+	for _, value := range []string{model, effort, u.effectiveMode()} {
 		if value != "" {
 			fmt.Fprintf(u.out, "  %s%s%s", muted, value, reset)
 		}
@@ -572,13 +573,24 @@ func (u *ui) renderHeader() {
 }
 
 // effective* 回傳目前生效的值；未知時回傳空字串，呼叫端必須省略該 segment，不得顯示 placeholder。
+//
+// backend 有回報 config option 時，model / effort / mode 只取自清單（依 category）：option 消失就是未知，
+// 不退回 session 開啟時的舊值，也不套用 codex 專屬的 per-turn override。
 func (u *ui) effectiveModel() string {
+	if len(u.configOptions) > 0 {
+		return configValue(u.configOptions, "model")
+	}
 	return valueOr(u.overrides.model, u.thread.Model)
 }
 
 func (u *ui) effectiveEffort() string {
+	if len(u.configOptions) > 0 {
+		return configValue(u.configOptions, "thought_level")
+	}
 	return valueOr(u.overrides.reasoningEffort, u.thread.ReasoningEffort)
 }
+
+func (u *ui) effectiveMode() string { return configValue(u.configOptions, "mode") }
 
 func (u *ui) effectiveApproval() string {
 	return valueOr(u.overrides.approvalPolicy, u.thread.ApprovalPolicy)
@@ -919,6 +931,9 @@ func (u *ui) handleCommand(value string) error {
 		return u.submit(text)
 	}
 	u.clearCommandInput()
+	if command.configID != "" {
+		return u.commandConfigOption(command.configID, args)
+	}
 	switch command.name {
 	case "help":
 		u.showHelp()
@@ -963,7 +978,11 @@ func (u *ui) showStatus() {
 	u.input = nil
 	u.cursor = 0
 	if u.screenMode {
-		u.screenAdd(screenInfo, fmt.Sprintf("status\n  model       %s\n  effort      %s\n  approval    %s\n  sandbox     %s\n  cwd         %s\n  thread      %s\n  state       %s", knownValue(u.effectiveModel()), knownValue(u.effectiveEffort()), knownValue(u.effectiveApproval()), knownValue(u.effectiveSandbox()), u.cwd, u.thread.ID, map[bool]string{true: "working", false: "idle"}[u.busy]))
+		text := fmt.Sprintf("status\n  model       %s\n  effort      %s\n  approval    %s\n  sandbox     %s\n  cwd         %s\n  thread      %s\n  state       %s", knownValue(u.effectiveModel()), knownValue(u.effectiveEffort()), knownValue(u.effectiveApproval()), knownValue(u.effectiveSandbox()), u.cwd, u.thread.ID, map[bool]string{true: "working", false: "idle"}[u.busy])
+		if lines := u.configStatusLines(); len(lines) > 0 {
+			text += "\n" + strings.Join(lines, "\n")
+		}
+		u.screenAdd(screenInfo, text)
 		return
 	}
 	model := valueOr(u.overrides.model, u.thread.Model)
@@ -980,7 +999,11 @@ func (u *ui) showStatus() {
 	fmt.Fprintf(u.out, "  sandbox     %s\n", sanitizeText(sandbox))
 	fmt.Fprintf(u.out, "  cwd         %s\n", sanitizeText(u.cwd))
 	fmt.Fprintf(u.out, "  thread      %s\n", sanitizeText(u.thread.ID))
-	fmt.Fprintf(u.out, "  state       %s\n\n", map[bool]string{true: "working", false: "idle"}[u.busy])
+	fmt.Fprintf(u.out, "  state       %s\n", map[bool]string{true: "working", false: "idle"}[u.busy])
+	for _, line := range u.configStatusLines() {
+		fmt.Fprintf(u.out, "%s\n", sanitizeText(line))
+	}
+	fmt.Fprintln(u.out)
 	u.renderPrompt()
 }
 
@@ -1201,11 +1224,8 @@ func (u *ui) handleEvent(event Event) {
 		}
 	case EvCommandsUpdated:
 		u.agentCommands = event.Commands
-	case EvModelChanged:
-		u.thread.Model = event.Model
-		u.modelCache = nil
-	case EvEffortChanged:
-		u.thread.ReasoningEffort = event.Effort
+	case EvConfigOptions:
+		u.configOptions = event.Options
 	case EvTurnCompleted:
 		// 失敗原因若已由 error notice 顯示過就不重複。
 		if event.Err != nil && event.Err.Error() != u.lastErrorNotice {

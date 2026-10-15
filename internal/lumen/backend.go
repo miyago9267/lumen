@@ -3,6 +3,8 @@ package lumen
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 )
 
 // errSessionNotFound 表示 backend 找不到要接回的 session；reconnect 在 transcript 為空時可改開新 session。
@@ -46,7 +48,6 @@ type Capabilities struct {
 	Review         bool
 	Compact        bool
 	ModelList      bool
-	ModelSwitch    bool
 	UserInput      bool
 	TokenBreakdown bool
 	NativeAdmin    bool
@@ -91,10 +92,86 @@ type ModelPicker interface {
 	ModelOptions() ([]modelOption, error)
 }
 
-// ModelSetter 由能在 session 內切換 model 的 backend 實作（ACP）。
-// 回傳 backend 認可的 model ID；未實作時（codex）/model <id> 退回 per-turn override。
-type ModelSetter interface {
-	SetModel(sessionID, id string) (string, error)
+// ConfigOption 是 backend 宣告的一個 select 型設定（ACP configOptions），UI 依它自動長出 /<id> command。
+// Values 沿用 modelOption 當通用的 select value（ID=value）。Category 可為空。
+// 一份 []ConfigOption 視為 immutable：要改就複製，backend 與 UI 才能安全共用 slice。
+type ConfigOption struct {
+	ID          string
+	Name        string
+	Description string
+	Category    string
+	Current     string
+	Values      []modelOption
+}
+
+// ConfigSetter 由能在 session 內切換 ConfigOption 的 backend 實作（ACP）。
+// 只能由使用者明確下的 /<id> <value> 觸發；回傳 backend 認可的 value ID。
+type ConfigSetter interface {
+	SetConfigOption(sessionID, id, value string) (string, error)
+}
+
+// withCurrent 回傳 current 改成 value 的複本（不改動原本的 Values）。
+func (o ConfigOption) withCurrent(value string) ConfigOption {
+	o.Current = value
+	values := make([]modelOption, len(o.Values))
+	for i, item := range o.Values {
+		item.Current = item.ID == value
+		values[i] = item
+	}
+	o.Values = values
+	return o
+}
+
+func (o ConfigOption) valueIDs() string {
+	ids := make([]string, 0, len(o.Values))
+	for _, item := range o.Values {
+		ids = append(ids, item.ID)
+	}
+	return strings.Join(ids, ", ")
+}
+
+// Resolve 把使用者輸入對到一個 value：(1) value 完全相同；(2) value 不分大小寫唯一相同；
+// (3) display name 不分大小寫唯一相同。name 命中多個 value 時回 ambiguous，不猜。
+func (o ConfigOption) Resolve(query string) (modelOption, error) {
+	query = strings.TrimSpace(query)
+	for _, item := range o.Values {
+		if item.ID == query {
+			return item, nil
+		}
+	}
+	for _, match := range []func(modelOption) string{
+		func(item modelOption) string { return item.ID },
+		func(item modelOption) string { return item.Name },
+	} {
+		var hits []modelOption
+		for _, item := range o.Values {
+			if query != "" && strings.EqualFold(match(item), query) {
+				hits = append(hits, item)
+			}
+		}
+		switch len(hits) {
+		case 1:
+			return hits[0], nil
+		case 0:
+		default:
+			ids := make([]string, 0, len(hits))
+			for _, item := range hits {
+				ids = append(ids, item.ID)
+			}
+			return modelOption{}, fmt.Errorf("ambiguous %s value %q; matches: %s", o.ID, query, strings.Join(ids, ", "))
+		}
+	}
+	return modelOption{}, fmt.Errorf("unknown %s value %q; available: %s", o.ID, query, o.valueIDs())
+}
+
+// configValue 取出第一個指定 category 的 option 目前值；沒有則回傳空字串。
+func configValue(options []ConfigOption, category string) string {
+	for _, option := range options {
+		if option.Category == category {
+			return option.Current
+		}
+	}
+	return ""
 }
 
 // Event 是 backend 送給 UI 的 normalized event（sealed interface）。
@@ -250,11 +327,9 @@ type EvModeWarning struct {
 	Text string
 }
 
-// EvModelChanged 回報 backend 端改變了目前 model（例如 ACP agent 推送 config_option_update）。
-type EvModelChanged struct{ Model string }
-
-// EvEffortChanged 回報 backend 端改變了目前 reasoning effort（ACP config_option_update 的 thought_level）。
-type EvEffortChanged struct{ Effort string }
+// EvConfigOptions 整份取代 UI 持有的 config option 清單（session 開啟 / 接回、config_option_update、
+// set_config_option 回應）。選項消失代表 agent 不再提供，UI 不保留舊值。
+type EvConfigOptions struct{ Options []ConfigOption }
 
 // EvTurnCompleted.Label 是 UI 逐字顯示的原始字串（空字串視為 completed）。
 type EvTurnCompleted struct {
@@ -322,5 +397,4 @@ func (EvRequestRejected) isEvent()    {}
 func (EvConnectionLost) isEvent()     {}
 func (EvCommandsUpdated) isEvent()    {}
 func (EvModeWarning) isEvent()        {}
-func (EvModelChanged) isEvent()       {}
-func (EvEffortChanged) isEvent()      {}
+func (EvConfigOptions) isEvent()      {}

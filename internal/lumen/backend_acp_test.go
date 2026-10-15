@@ -332,7 +332,7 @@ func TestACPDefaultModeHasNoWarning(t *testing.T) {
 }
 
 func TestACPModeFromConfigOptions(t *testing.T) {
-	options := []acpConfigOption{{ID: "model", CurrentValue: "x"}, {ID: "mode", Category: "mode", CurrentValue: "bypassPermissions"}}
+	options := []ConfigOption{{ID: "model", Current: "x"}, {ID: "mode", Category: "mode", Current: "bypassPermissions"}}
 	if got := acpModeOf("", options); got != "bypassPermissions" {
 		t.Fatalf("mode = %q", got)
 	}

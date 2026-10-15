@@ -63,7 +63,7 @@ header、dock status label 與 Coralline `model.display_name` 會出現
   pointer + omitempty。payload 絕不含 `configured …` 或 `inherit`。
 - **D2.3** ACP backend 的 model 來自 `session/new|load|resume` 與 `config_option_update` 的
   `category=model` option（既有 WIP 已處理）；effort 來自 `category=thought_level` 的 option
-  （真實 adapter 0.90.0 的 `effort`，見 backend-adapter PROGRESS「/model 支援」），新增 `EvEffortChanged`。
+  （真實 adapter 0.90.0 的 `effort`，見 backend-adapter PROGRESS「/model 支援」），新增 `EvEffortChanged`（2026-10-15 起由 `EvConfigOptions` 取代，見 `docs/specs/acp-config-options/SPEC.md`）。
 - **D2.4** ACP 的 approval 不從 mode 推導：mode 非 default 時 dock 已有 `permissions: <mode>` 警示，
   再顯示 approval 會重複；default mode 沒有值得顯示的資訊。故 ACP 的 approval segment 省略。
   `/status`、`/permissions`、`/model` 這類明細畫面在未知時顯示 `unknown`（明細畫面需要明確欄位）。

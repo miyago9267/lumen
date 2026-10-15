@@ -406,7 +406,6 @@ func (b *codexBackend) Caps() Capabilities {
 		Review:         true,
 		Compact:        true,
 		ModelList:      true,
-		ModelSwitch:    true,
 		UserInput:      true,
 		TokenBreakdown: true,
 		NativeAdmin:    true,

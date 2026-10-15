@@ -28,6 +28,10 @@ type corallineEffortPayload struct {
 	Level string `json:"level"`
 }
 
+type corallineModePayload struct {
+	ID string `json:"id"`
+}
+
 type corallineContextUsagePayload struct {
 	CacheReadInputTokens     int64 `json:"cache_read_input_tokens,omitempty"`
 	CacheCreationInputTokens int64 `json:"cache_creation_input_tokens,omitempty"`
@@ -45,6 +49,7 @@ type corallineStatusPayload struct {
 	Workspace     corallineWorkspacePayload      `json:"workspace"`
 	Model         corallineModelPayload          `json:"model"`
 	Effort        *corallineEffortPayload        `json:"effort,omitempty"`
+	Mode          *corallineModePayload          `json:"mode,omitempty"`
 	ContextWindow *corallineContextWindowPayload `json:"context_window,omitempty"`
 }
 
@@ -145,6 +150,9 @@ func (u *ui) corallinePayload() corallineStatusPayload {
 	}
 	if effort := strings.TrimSpace(u.effectiveEffort()); effort != "" {
 		payload.Effort = &corallineEffortPayload{Level: effort}
+	}
+	if mode := strings.TrimSpace(u.effectiveMode()); mode != "" {
+		payload.Mode = &corallineModePayload{ID: mode}
 	}
 	if u.usage.hasContextWindow && u.usage.modelContextWindow > 0 {
 		usedPercentage := float64(u.usage.totalTokens) * 100 / float64(u.usage.modelContextWindow)

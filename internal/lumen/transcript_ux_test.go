@@ -148,21 +148,25 @@ func TestACPEffortFromConfigOptions(t *testing.T) {
 		t.Fatalf("session info model/effort = %q/%q, want opus/high", info.Model, info.ReasoningEffort)
 	}
 	events := run.runTurn(t, info.ID, "effortpush")
-	var changed []string
-	for _, event := range events {
-		if event, ok := event.(EvEffortChanged); ok {
-			changed = append(changed, event.Effort)
+	// events 先含 NewSession 時送出的那份（high），再來才是 update（xhigh）。
+	var seen []string
+	for _, event := range configEventsOf(events) {
+		if effort, _ := findConfigOption(event.Options, "effort"); effort.Category == "thought_level" {
+			seen = append(seen, effort.Current)
 		}
 	}
-	if len(changed) != 1 || changed[0] != "xhigh" {
-		t.Fatalf("EvEffortChanged = %q, want [xhigh]", changed)
+	if len(seen) != 2 || seen[0] != "high" || seen[1] != "xhigh" {
+		t.Fatalf("effort in EvConfigOptions = %q, want [high xhigh]", seen)
 	}
 }
 
-// T-UX-07
+// T-UX-07：EvConfigOptions 更新 header 的 effort（見 config_options_ui_test.go 的 T-CFG-22）。
 func TestEffortChangedUpdatesHeader(t *testing.T) {
 	frontend := &ui{screenMode: true, branch: "main", thread: threadSummary{Model: "opus", ReasoningEffort: "high"}}
-	frontend.handleEvent(EvEffortChanged{Effort: "xhigh"})
+	frontend.handleEvent(EvConfigOptions{Options: []ConfigOption{
+		selectOption("model", "Model", "model", "opus", "opus"),
+		selectOption("effort", "Effort", "thought_level", "xhigh", "xhigh"),
+	}})
 	if header := stripANSI(frontend.screenHeaderLine(100)); !strings.Contains(header, "opus · xhigh") {
 		t.Fatalf("header = %q", header)
 	}

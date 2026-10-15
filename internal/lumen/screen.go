@@ -388,7 +388,7 @@ func (u *ui) screenHeaderLine(width int) string {
 	if name := strings.TrimSpace(u.thread.Name); name != "" {
 		left += " · " + sanitizeText(name)
 	}
-	right := joinKnown(" · ", u.effectiveModel(), u.effectiveEffort(), u.effectiveApproval(), u.effectiveSandbox())
+	right := joinKnown(" · ", u.effectiveModel(), u.effectiveEffort(), u.effectiveMode(), u.effectiveApproval(), u.effectiveSandbox())
 	if usage := u.usageLabel(); usage != "" {
 		right = usage + "  " + right
 	}
@@ -781,7 +781,8 @@ func (u *ui) screenStatusLabel() string {
 	return joinKnown(" · ", statusBarBrand, label)
 }
 
-// screenModelSummary 是 `model (effort) · approval`，只含已知的 segment。
+// screenModelSummary 是 `model (effort) · mode · approval`，只含已知的 segment；
+// 已有 permission 警示時不重複 mode。
 func (u *ui) screenModelSummary() string {
 	model := u.effectiveModel()
 	if effort := u.effectiveEffort(); effort != "" {
@@ -791,7 +792,11 @@ func (u *ui) screenModelSummary() string {
 			model += " (" + effort + ")"
 		}
 	}
-	return joinKnown(" · ", model, u.effectiveApproval())
+	mode := u.effectiveMode()
+	if u.permissionNote != "" {
+		mode = ""
+	}
+	return joinKnown(" · ", model, mode, u.effectiveApproval())
 }
 
 func (u *ui) screenDockLine(width int) string {

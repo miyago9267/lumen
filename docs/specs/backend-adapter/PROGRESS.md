@@ -187,3 +187,5 @@ Probe：真實 `claude-agent-acp@0.90.0`，只送 `initialize` + `session/new` +
 - `/model`（無參數 / `list`）與 `/model <id>` 走 backend-neutral 的 `ModelPicker` / `ModelSetter`；codex 實作 `ModelPicker`（`model/list`），沒有 `ModelSetter`，`/model <id>` 維持 per-turn override。`/model ` 的參數補全（Tab 補 id、Enter 執行）在 codex 與 ACP 共用；ACP 的 dynamic catalog 在 `ModelList` 為 true 時多出 `/model`。
 - 發現（未處理）：以真實 adapter 跑 `go test`，測試結束後 adapter 的子孫 process 仍持有 stdout pipe，使 `go test ... | tail` 不返回（`Close` 後）。測試本身 PASS；是否為 Close 沒清掉 process group 待查。
 - 未驗證：live TUI 手動操作 `/model` + Tab（只用 unit/fake-adapter 測試與真實 adapter 的 backend 層 probe 覆蓋）。
+
+> 2026-10-15 之後：本節的 `ModelPicker` / `ModelSetter` / `ModelSwitch` / `EvModelChanged` 已被 generic configOptions 路徑取代（ACP 只剩 `ConfigSetter` 與 `EvConfigOptions`；codex 的 `ModelPicker` 不變），見 `docs/specs/acp-config-options/SPEC.md`。

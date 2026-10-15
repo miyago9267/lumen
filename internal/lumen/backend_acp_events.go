@@ -18,7 +18,10 @@ type acpToolContent struct {
 
 type acpConfigOption struct {
 	ID           string          `json:"id"`
+	Name         string          `json:"name"`
+	Description  string          `json:"description"`
 	Category     string          `json:"category"`
+	Type         string          `json:"type"`
 	CurrentValue any             `json:"currentValue"`
 	Options      json.RawMessage `json:"options"`
 }
@@ -42,62 +45,43 @@ func flattenSelectOptions(items []acpSelectOption, out []modelOption) []modelOpt
 	return out
 }
 
-// acpModels 是 agent 回報的 model 清單。configID 非空時以 session/set_config_option 切換；
-// 否則是 unstable 的 models.availableModels，以 session/set_model 切換。
-type acpModels struct {
-	configID string
-	current  string
-	options  []modelOption
+// acpConfigOptions 把 wire 上的 configOptions 轉成 ConfigOption：只收 select（type 省略視為 select），
+// 依 agent 的順序；boolean 等其他型別與 id 重複者略過。沒有任何 value 的 option 仍保留（header / /status 要顯示
+// 目前值），只是 UI 不會為它產生 command。
+func acpConfigOptions(raw []acpConfigOption) []ConfigOption {
+	var out []ConfigOption
+	seen := map[string]bool{}
+	for _, item := range raw {
+		if item.ID == "" || seen[item.ID] || (item.Type != "" && item.Type != "select") {
+			continue
+		}
+		current, ok := item.CurrentValue.(string)
+		var groups []acpSelectOption
+		if !ok || json.Unmarshal(item.Options, &groups) != nil {
+			continue
+		}
+		seen[item.ID] = true
+		option := ConfigOption{
+			ID: item.ID, Name: item.Name, Description: item.Description, Category: item.Category,
+			Values: flattenSelectOptions(groups, nil),
+		}
+		out = append(out, option.withCurrent(current))
+	}
+	return out
 }
 
-// acpModelsFromConfig 取出 category=model 的 config option；沒有（或沒有任何選項）回傳 nil。
-func acpModelsFromConfig(options []acpConfigOption) *acpModels {
+func findConfigOptionByID(options []ConfigOption, id string) (ConfigOption, bool) {
 	for _, option := range options {
-		if option.Category != "model" {
-			continue
-		}
-		var items []acpSelectOption
-		if json.Unmarshal(option.Options, &items) != nil {
-			continue
-		}
-		models := &acpModels{configID: option.ID, options: flattenSelectOptions(items, nil)}
-		models.current, _ = option.CurrentValue.(string)
-		if len(models.options) > 0 {
-			models.setCurrent(models.current)
-			return models
-		}
-	}
-	return nil
-}
-
-func (m *acpModels) setCurrent(id string) {
-	m.current = id
-	for i := range m.options {
-		m.options[i].Current = m.options[i].ID == id
-	}
-}
-
-// resolve 以 ID（精確）或 ID / Name（不分大小寫）找出 model。
-func (m *acpModels) resolve(query string) (modelOption, bool) {
-	for _, option := range m.options {
-		if option.ID == query {
+		if option.ID == id {
 			return option, true
 		}
 	}
-	for _, option := range m.options {
-		if strings.EqualFold(option.ID, query) || strings.EqualFold(option.Name, query) {
+	for _, option := range options {
+		if strings.EqualFold(option.ID, id) {
 			return option, true
 		}
 	}
-	return modelOption{}, false
-}
-
-func (m *acpModels) ids() string {
-	ids := make([]string, 0, len(m.options))
-	for _, option := range m.options {
-		ids = append(ids, option.ID)
-	}
-	return strings.Join(ids, ", ")
+	return ConfigOption{}, false
 }
 
 // acpUpdate 涵蓋 session/update 內所有 sessionUpdate 種類用到的欄位；
@@ -238,29 +222,16 @@ func toolText(raw json.RawMessage) string {
 	return strings.Join(parts, "")
 }
 
-// acpModeOf 從 session/new（或 load / resume）結果或 config_option_update 取出目前 mode。
-func acpModeOf(currentModeID string, options []acpConfigOption) string {
+// acpModeOf 從 session 結果的 modes.currentModeId，或 config option（category=mode，其次 id=mode）取出目前 mode。
+func acpModeOf(currentModeID string, options []ConfigOption) string {
 	if currentModeID != "" {
 		return currentModeID
 	}
-	for _, option := range options {
-		if option.ID == "mode" || option.Category == "mode" {
-			if value, ok := option.CurrentValue.(string); ok {
-				return value
-			}
-		}
+	if mode := configValue(options, "mode"); mode != "" {
+		return mode
 	}
-	return ""
-}
-
-// acpEffortOf 取出 category=thought_level 的 config option 目前值；沒有則回傳空字串。
-func acpEffortOf(options []acpConfigOption) string {
-	for _, option := range options {
-		if option.Category == "thought_level" {
-			if value, ok := option.CurrentValue.(string); ok {
-				return value
-			}
-		}
+	if option, ok := findConfigOptionByID(options, "mode"); ok {
+		return option.Current
 	}
 	return ""
 }

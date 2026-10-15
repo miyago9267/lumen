@@ -2,11 +2,12 @@ package lumen
 
 import "strings"
 
-// /model 的參數補全：輸入 "/model " 加上部分字串時，popup 顯示 backend 回報的 model，
-// Tab 補全選取的 ID。只處理 /model；其他 command 沿用原本只補全 command 名稱的行為。
+// 參數補全：輸入 "/<command> " 加上部分字串時，popup 顯示該 command 的候選 value，Tab 補全選取的 value。
+// 候選來源有兩種：backend 的 select ConfigOption（ACP；直接讀 UI 持有的清單，沒有 RPC），
+// 以及 codex 靜態 catalog 的 /model（ModelPicker）。其他 command 沿用只補全 command 名稱的行為。
 
 // modelCandidateCache 以 (backend, session) 為 key 快取 ModelOptions，避免 codex 的 model/list
-// 在每次按鍵都送一次 RPC；換 backend、換 session 或 model 變動時失效。
+// 在每次按鍵都送一次 RPC；換 backend、換 session 時失效。
 type modelCandidateCache struct {
 	backend Backend
 	session string
@@ -30,45 +31,86 @@ func (u *ui) modelCandidates() []modelOption {
 	return options
 }
 
-// modelArgInput 回傳輸入是否為 "/model <partial>"（partial 不含空白）。
-func modelArgInput(value string) (partial string, ok bool) {
+// commandArgInput 回傳輸入是否為 "/<name> <partial>"（partial 不含空白）。
+func commandArgInput(value string) (name, partial string, ok bool) {
 	if !strings.HasPrefix(value, "/") {
-		return "", false
+		return "", "", false
 	}
 	rest := strings.TrimPrefix(value, "/")
 	end := strings.IndexAny(rest, " \t")
-	if end < 0 || !strings.EqualFold(rest[:end], "model") {
-		return "", false
+	if end < 0 {
+		return "", "", false
 	}
 	partial = strings.TrimLeft(rest[end:], " \t")
 	if strings.ContainsAny(partial, " \t\r\n") {
-		return "", false
+		return "", "", false
 	}
-	return partial, true
+	return strings.ToLower(rest[:end]), partial, true
 }
 
-// modelArgItems 是 /model 參數 popup 的項目（argument=true；name 為 model ID）。
-func (u *ui) modelArgItems() ([]slashCommand, bool) {
-	partial, ok := modelArgInput(string(u.input))
+// argCandidates 是 command name 的候選 value 與目前值；command 不接受 value 補全時 ok=false。
+func (u *ui) argCandidates(name string) (candidates []modelOption, current string, ok bool) {
+	command, found := u.slashCommandByName(name)
+	if !found || command.agent {
+		return nil, "", false
+	}
+	if command.configID != "" {
+		option, found := findConfigOptionByID(u.configOptions, command.configID)
+		return option.Values, option.Current, found
+	}
+	if command.name == "model" {
+		return u.modelCandidates(), u.effectiveModel(), true
+	}
+	return nil, "", false
+}
+
+// configCategory 回傳 command name 對應的 config option category；不是 option command 時回傳空字串。
+func (u *ui) configCategory(name string) string {
+	if command, found := u.slashCommandByName(name); found && command.configID != "" {
+		if option, found := findConfigOptionByID(u.configOptions, command.configID); found {
+			return option.Category
+		}
+	}
+	return ""
+}
+
+// commandArgItems 是參數 popup 的項目（argument=true；name 為 value ID，parent 為 command）。
+func (u *ui) commandArgItems() ([]slashCommand, bool) {
+	name, partial, ok := commandArgInput(string(u.input))
+	if !ok {
+		return nil, false
+	}
+	candidates, current, ok := u.argCandidates(name)
 	if !ok {
 		return nil, false
 	}
 	query := strings.ToLower(partial)
 	var items []slashCommand
-	for _, option := range u.modelCandidates() {
+	for _, option := range candidates {
 		if query != "" && !strings.Contains(strings.ToLower(option.ID), query) && !strings.Contains(strings.ToLower(option.Name), query) {
 			continue
 		}
-		description := option.Name
+		description := oneLine(option.Name)
 		if option.Description != "" {
-			description = strings.Trim(description+" · "+option.Description, " ·")
+			description = strings.Trim(description+" · "+oneLine(option.Description), " ·")
 		}
-		if option.Current || option.ID == u.effectiveModel() {
+		if option.Current || option.ID == current {
 			description = strings.TrimSpace("(current) " + description)
 		}
-		items = append(items, slashCommand{name: option.ID, description: description, argument: true})
+		items = append(items, slashCommand{name: option.ID, parent: name, description: description, argument: true})
 	}
 	return items, len(items) > 0
+}
+
+// exactArg 回傳 partial 是否已是 name 的某個完整 value（不分大小寫）。
+func (u *ui) exactArg(name, partial string) bool {
+	candidates, _, _ := u.argCandidates(name)
+	for _, option := range candidates {
+		if strings.EqualFold(option.ID, partial) {
+			return true
+		}
+	}
+	return false
 }
 
 // popupLabel 是 popup 一列左側的文字：command 帶 "/"，參數候選不帶。

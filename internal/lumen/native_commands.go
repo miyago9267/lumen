@@ -12,8 +12,10 @@ type slashCommand struct {
 	description        string
 	aliases            []string
 	supportsInlineArgs bool
-	agent              bool // backend（ACP）宣告的 command；執行時以 "/name args" 文字送 prompt
-	argument           bool // 參數候選（例如 /model 的 model ID），name 是要補全的值而不是 command
+	agent              bool   // backend（ACP）宣告的 command；執行時以 "/name args" 文字送 prompt
+	argument           bool   // 參數候選（例如 /model 的 model ID），name 是要補全的值而不是 command
+	parent             string // 參數候選所屬的 command 名稱（argument=true 時）
+	configID           string // 非空 = 由 backend 的 select ConfigOption 產生；值是 option id
 }
 
 // localSlashCommands 是不需要 backend 專屬功能、任何 backend 都可用的 Lumen-local command；
@@ -31,12 +33,13 @@ func (u *ui) dynamicCatalog() bool {
 }
 
 // slashCatalog 依目前 backend 即時計算：靜態 backend 用內建 catalog；
-// dynamic backend 用 Lumen-local 加上 agent command（與 local 同名者以 local 為準）。
+// dynamic backend 依序疊上 Lumen-local、configOption command、agent command；同名者先到先得，
+// 所以 precedence 是 local > configOption > agent。
 func (u *ui) slashCatalog() []slashCommand {
 	if !u.dynamicCatalog() {
 		return slashCommandCatalog
 	}
-	catalog := make([]slashCommand, 0, len(localSlashCommands)+len(u.agentCommands))
+	catalog := make([]slashCommand, 0, len(localSlashCommands)+len(u.configOptions)+len(u.agentCommands))
 	taken := map[string]bool{}
 	for _, command := range slashCommandCatalog {
 		if !localSlashCommands[command.name] {
@@ -48,11 +51,13 @@ func (u *ui) slashCatalog() []slashCommand {
 			taken[alias] = true
 		}
 	}
-	if u.backend.Caps().ModelList {
-		if command, ok := lookupSlashCommand(slashCommandCatalog, "model"); ok {
-			catalog = append(catalog, command)
-			taken["model"] = true
+	for _, option := range u.configOptions {
+		name := strings.ToLower(strings.TrimSpace(option.ID))
+		if name == "" || len(option.Values) == 0 || taken[name] {
+			continue
 		}
+		taken[name] = true
+		catalog = append(catalog, slashCommand{name: name, description: configOptionDescription(option), supportsInlineArgs: true, configID: option.ID})
 	}
 	for _, command := range u.agentCommands {
 		name := strings.ToLower(strings.TrimSpace(strings.TrimPrefix(command.Name, "/")))
@@ -74,8 +79,8 @@ func (u *ui) filterSlashCommands(query string) []slashCommand {
 }
 
 func (u *ui) slashCommandsTitle() string {
-	if _, ok := u.modelArgItems(); ok {
-		return "⌘ models"
+	if items, ok := u.commandArgItems(); ok {
+		return "⌘ " + configValuesTitle(items[0].parent)
 	}
 	if u.dynamicCatalog() {
 		return "⌘ " + u.backend.Name() + " commands"
@@ -233,7 +238,7 @@ func (u *ui) commandPopupVisible() bool {
 	if u.commandPopupDismissed || u.approval != nil || u.inputRequest != nil || u.dashboard || u.backendPicker || u.shortcuts {
 		return false
 	}
-	if _, ok := u.modelArgItems(); ok {
+	if _, ok := u.commandArgItems(); ok {
 		return true
 	}
 	value := string(u.input)
@@ -248,7 +253,7 @@ func (u *ui) commandPopupVisible() bool {
 }
 
 func (u *ui) commandPopupItems() []slashCommand {
-	if items, ok := u.modelArgItems(); ok {
+	if items, ok := u.commandArgItems(); ok {
 		return items
 	}
 	query, _, ok := slashCommandInput(string(u.input))
@@ -297,7 +302,7 @@ func (u *ui) completeSlashCommand() bool {
 	}
 	value := "/" + command.name
 	if command.argument {
-		value = "/model " + command.name
+		value = "/" + command.parent + " " + command.name
 	} else if command.supportsInlineArgs {
 		value += " "
 	}
@@ -325,10 +330,14 @@ func (u *ui) handleCommandPopupKey(key keyEvent) (bool, error) {
 		u.renderPrompt()
 		return true, nil
 	case keyEnter:
-		if partial, ok := modelArgInput(string(u.input)); ok {
-			// 部分輸入（非完整 ID）時補全選取的 model 再執行；空白則直接執行（列出清單）。
-			if partial == "" || u.exactModelArg(partial) || !u.completeSlashCommand() {
+		if name, partial, ok := commandArgInput(string(u.input)); ok {
+			// 部分輸入（非完整 value）時補全選取項再執行；空白則直接執行（列出清單）。
+			// mode category 例外：補全後不執行，要使用者看過完整 value 再按一次 Enter，避免前綴誤觸權限切換。
+			if partial == "" || u.exactArg(name, partial) || !u.completeSlashCommand() {
 				return false, nil
+			}
+			if u.configCategory(name) == "mode" {
+				return true, nil
 			}
 			return true, u.handleCommand(string(u.input))
 		}
@@ -386,13 +395,4 @@ func (u *ui) inlineCommandPopupLines() int {
 		count = 6
 	}
 	return 2 + count
-}
-
-func (u *ui) exactModelArg(partial string) bool {
-	for _, option := range u.modelCandidates() {
-		if strings.EqualFold(option.ID, partial) {
-			return true
-		}
-	}
-	return false
 }

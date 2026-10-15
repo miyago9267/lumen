@@ -29,8 +29,8 @@ Kind：U = unit、I = integration（fake ACP agent）、M = 手動。U/I 以 `go
 - **T-UX-05 (U)** WHEN the model is unknown, the Coralline payload JSON shall not contain `configured` or `inherit`
   and shall not carry a `display_name`.
 - **T-UX-06 (I)** WHEN the ACP session reports `category=thought_level` in `configOptions`, the session info shall carry that
-  value as the effort, and a later `config_option_update` that changes it shall emit `EvEffortChanged`.
-- **T-UX-07 (U)** WHEN `EvEffortChanged` arrives, the header shall show the new effort.
+  value as the effort, and a later `config_option_update` that changes it shall emit `EvEffortChanged` (now `EvConfigOptions`; see acp-config-options).
+- **T-UX-07 (U)** WHEN `EvEffortChanged` (now `EvConfigOptions`) arrives, the header shall show the new effort.
 
 ## Item 3：tool marker
 

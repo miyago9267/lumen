@@ -103,16 +103,6 @@ func (u *ui) commandModel(args string) error {
 	args = strings.TrimSpace(args)
 	backend := u.backend
 	if args != "" && !strings.EqualFold(args, "list") {
-		if setter, ok := backend.(ModelSetter); ok && backend.Caps().ModelSwitch {
-			model, err := setter.SetModel(u.thread.ID, strings.Fields(args)[0])
-			if err != nil {
-				return err
-			}
-			u.thread.Model = model
-			u.modelCache = nil
-			u.commandMessage("model · "+model, green)
-			return nil
-		}
 		u.overrides.model = strings.Fields(args)[0]
 		u.commandMessage("model override · "+u.overrides.model, green)
 		return nil
