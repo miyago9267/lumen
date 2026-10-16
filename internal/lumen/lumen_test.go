@@ -2252,3 +2252,42 @@ func (w *bufferWriteCloser) Close() error {
 	w.mu.Unlock()
 	return nil
 }
+
+func TestExitResumeHint(t *testing.T) {
+	tests := []struct {
+		name    string
+		backend Backend
+		id      string
+		want    string
+	}{
+		{
+			name:    "claude backend prints lumen and claude resume lines",
+			backend: &swapBackend{name: "claude"},
+			id:      "7f3c1a2b-session",
+			want:    "resume: lumen --resume 7f3c1a2b-session\n        claude --resume 7f3c1a2b-session\n",
+		},
+		{
+			name:    "codex backend prints only lumen resume line",
+			backend: &swapBackend{name: "codex"},
+			id:      "thread-123",
+			want:    "resume: lumen --resume thread-123\n",
+		},
+		{
+			name:    "no session id prints nothing",
+			backend: &swapBackend{name: "claude"},
+			id:      "",
+			want:    "",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			u := newUI(tt.backend, threadSummary{ID: tt.id}, "/tmp/project", false, runtimeOverrides{})
+			u.out = &buf
+			u.printExitResumeHint()
+			if got := buf.String(); got != tt.want {
+				t.Fatalf("exit hint = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}

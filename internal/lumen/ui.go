@@ -585,10 +585,29 @@ func newUI(backend Backend, thread threadSummary, cwd string, fullscreen bool, o
 
 func (u *ui) run(initialPrompt string) error {
 	interactive := term.IsTerminal(int(os.Stdin.Fd()))
+	var err error
 	if u.fullscreen && interactive {
-		return u.runFullscreen(initialPrompt)
+		err = u.runFullscreen(initialPrompt)
+	} else {
+		err = u.runInline(initialPrompt, interactive)
 	}
-	return u.runInline(initialPrompt, interactive)
+	// run 回傳時 lifecycle 已離開 alt screen，提示會留在 terminal scrollback。
+	if err == nil {
+		u.printExitResumeHint()
+	}
+	return err
+}
+
+// printExitResumeHint 在正常離開時輸出可接回此 session 的指令；沒有 session id 時不輸出。
+func (u *ui) printExitResumeHint() {
+	id := strings.TrimSpace(u.thread.ID)
+	if id == "" {
+		return
+	}
+	fmt.Fprintf(u.out, "resume: lumen --resume %s\n", id)
+	if u.backend != nil && u.backend.Name() == "claude" {
+		fmt.Fprintf(u.out, "        claude --resume %s\n", id)
+	}
 }
 
 func (u *ui) runInline(initialPrompt string, interactive bool) error {
