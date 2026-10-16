@@ -17,10 +17,12 @@ import (
 type fakeBackend struct {
 	events  chan Event
 	prompts []string
+	images  [][]promptImage // 每次 Prompt 收到的附圖
+	caps    Capabilities
 }
 
 func (b *fakeBackend) Name() string                                  { return "fake" }
-func (b *fakeBackend) Caps() Capabilities                            { return Capabilities{} }
+func (b *fakeBackend) Caps() Capabilities                            { return b.caps }
 func (b *fakeBackend) Events() <-chan Event                          { return b.events }
 func (b *fakeBackend) Disconnected() (bool, error)                   { return false, nil }
 func (b *fakeBackend) Open(context.Context) error                    { return nil }
@@ -40,8 +42,9 @@ func (b *fakeBackend) ResumeSession(id, _ string, _ runtimeOverrides) (SessionIn
 
 func (b *fakeBackend) ListSessions(string, int) ([]SessionInfo, error) { return nil, nil }
 
-func (b *fakeBackend) Prompt(_, text string, _ runtimeOverrides) (string, error) {
+func (b *fakeBackend) Prompt(_, text string, images []promptImage, _ runtimeOverrides) (string, error) {
 	b.prompts = append(b.prompts, text)
+	b.images = append(b.images, images)
 	return "turn-1", nil
 }
 
@@ -379,7 +382,7 @@ func TestCodexBackendPromptSetsTurnForRequestValidation(t *testing.T) {
 	t.Cleanup(backend.Close)
 	events := backend.Events()
 
-	if turnID, err := backend.Prompt("thread-1", "hi", runtimeOverrides{}); err != nil || turnID != "turn-1" {
+	if turnID, err := backend.Prompt("thread-1", "hi", nil, runtimeOverrides{}); err != nil || turnID != "turn-1" {
 		t.Fatalf("Prompt() = %q, %v", turnID, err)
 	}
 	if _, err := fmt.Fprintln(writer, `{"id":9,"method":"item/tool/requestUserInput","params":{"threadId":"thread-1","turnId":"turn-old","questions":[{"id":"q","question":"?"}]}}`); err != nil {

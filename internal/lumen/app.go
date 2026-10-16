@@ -641,7 +641,7 @@ func applyThreadMetadata(thread *threadSummary, model, cwd string, instructions 
 	}
 }
 
-func (c *appServer) StartTurn(threadID, text string, overrides runtimeOverrides) (string, error) {
+func (c *appServer) StartTurn(threadID, text string, images []promptImage, overrides runtimeOverrides) (string, error) {
 	var result struct {
 		Turn struct {
 			ID string `json:"id"`
@@ -649,16 +649,22 @@ func (c *appServer) StartTurn(threadID, text string, overrides runtimeOverrides)
 	}
 	params := map[string]any{
 		"threadId": threadID,
-		"input": []map[string]string{{
-			"type": "text",
-			"text": text,
-		}},
+		"input":    turnInput(text, images),
 	}
 	applyTurnOverrides(params, overrides)
 	if err := c.Call("turn/start", params, &result); err != nil {
 		return "", err
 	}
 	return result.Turn.ID, nil
+}
+
+// turnInput 組出 turn/start 的 input：text item 之後接 localImage（codex app-server UserInput schema）。
+func turnInput(text string, images []promptImage) []map[string]string {
+	input := []map[string]string{{"type": "text", "text": text}}
+	for _, image := range images {
+		input = append(input, map[string]string{"type": "localImage", "path": image.Path})
+	}
+	return input
 }
 
 func applyThreadOverrides(params map[string]any, overrides runtimeOverrides) {

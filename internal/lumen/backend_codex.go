@@ -412,6 +412,7 @@ func (b *codexBackend) Caps() Capabilities {
 		Rename:         true,
 		Archive:        true,
 		Delete:         true,
+		ImagePrompt:    true,
 		SlashCatalog:   "static",
 	}
 }
@@ -451,8 +452,8 @@ func (b *codexBackend) ListSessions(cwd string, limit int) ([]SessionInfo, error
 }
 
 // Prompt 在 StartTurn 回傳後立刻記下 turn id，使 turn/started 到達前的 server request 也能做 turn 檢查。
-func (b *codexBackend) Prompt(sessionID, text string, rt runtimeOverrides) (string, error) {
-	turnID, err := b.client.StartTurn(sessionID, text, rt)
+func (b *codexBackend) Prompt(sessionID, text string, images []promptImage, rt runtimeOverrides) (string, error) {
+	turnID, err := b.client.StartTurn(sessionID, text, images, rt)
 	if err == nil && turnID != "" {
 		b.mu.Lock()
 		b.translator.turnID = turnID

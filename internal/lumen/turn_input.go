@@ -18,6 +18,9 @@ func (u *ui) queuePrompt() error {
 	if len(u.queuedPrompts) >= maxQueuedPrompts {
 		return fmt.Errorf("prompt queue is full (%d)", maxQueuedPrompts)
 	}
+	if _, err := u.promptImagesFor(value); err != nil {
+		return err
+	}
 	u.queuedPrompts = append(u.queuedPrompts, value)
 	u.rememberPrompt(value)
 	u.input = nil
@@ -37,6 +40,9 @@ func (u *ui) cancelAndSendPrompt() error {
 	}
 	if strings.HasPrefix(value, "/btw") {
 		return u.rejectAsidePrompt()
+	}
+	if _, err := u.promptImagesFor(value); err != nil {
+		return err
 	}
 	u.cancelAndSend = value
 	u.rememberPrompt(value)

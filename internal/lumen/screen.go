@@ -57,6 +57,7 @@ func (u *ui) runFullscreen(initialPrompt string) error {
 		return fmt.Errorf("enable raw terminal: %w", err)
 	}
 	defer lifecycle.Close()
+	defer u.releaseImages() // 在離開 alt screen 之前釋放 terminal 端圖片、刪除 temp 檔
 	defer func() {
 		if backend := u.backend; backend != nil {
 			backend.Close()
@@ -249,6 +250,7 @@ func (u *ui) renderScreen() {
 	width, height := terminalSize()
 	u.refreshCoralline(width)
 	fmt.Fprint(u.out, "\x1b[?25l\x1b[H", u.screenFrame(width, height))
+	u.syncImagePreview(width, height)
 	if row, column, ok := u.screenCursorPosition(width, height); ok {
 		fmt.Fprintf(u.out, "\x1b[%d;%dH\x1b[?25h", row, column)
 	}
@@ -348,6 +350,13 @@ func (u *ui) screenFrame(width, height int) string {
 	for len(transcript) < bodyRows {
 		transcript = append(transcript, "")
 	}
+	// 游標在 chip 上時，預覽蓋住 transcript 底部幾列（文字先清空，圖片由 renderScreen 之後放上去）。
+	preview := u.previewFor(width, bodyRows)
+	if preview != nil {
+		for index := 0; index < preview.rows && index < len(transcript); index++ {
+			transcript[len(transcript)-1-index] = ""
+		}
+	}
 
 	lines := []string{
 		u.screenHeaderLine(width),
@@ -356,6 +365,9 @@ func (u *ui) screenFrame(width, height int) string {
 	lines = append(lines, transcript...)
 	for index := 0; index < screenComposerGapRows; index++ {
 		lines = append(lines, "")
+	}
+	if preview != nil && screenComposerGapRows > 0 {
+		lines[len(lines)-screenComposerGapRows] = muted + truncateDisplay(sanitizeText(preview.caption), width-2) + reset
 	}
 	lines = append(lines, composer...)
 	lines = append(lines, u.screenDockLines(width)...)

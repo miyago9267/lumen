@@ -239,7 +239,7 @@ type Backend interface {
     NewSession(cwd string, rt runtimeOverrides) (SessionInfo, error)
     ResumeSession(id string, cwd string, rt runtimeOverrides) (SessionInfo, error) // ACP: load 或 resume
     ListSessions(cwd string, limit int) ([]SessionInfo, error)                    // Caps.SessionList
-    Prompt(sessionID, text string, rt runtimeOverrides) (turnID string, err error)
+    Prompt(sessionID, text string, images []promptImage, rt runtimeOverrides) (turnID string, err error) // images: docs/specs/image-paste
     Cancel(sessionID, turnID string) error
     ResolveApproval(reqID string, optionID string) error  // optionID == "" -> cancelled
     AnswerInput(reqID string, answers map[string][]string) error // Caps.UserInput

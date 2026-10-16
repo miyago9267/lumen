@@ -24,7 +24,8 @@ type Backend interface {
 	NewSession(cwd string, rt runtimeOverrides) (SessionInfo, error)
 	ResumeSession(id, cwd string, rt runtimeOverrides) (SessionInfo, error)
 	ListSessions(cwd string, limit int) ([]SessionInfo, error)
-	Prompt(sessionID, text string, rt runtimeOverrides) (turnID string, err error)
+	// Prompt 開始一個 turn；images 是隨 text 附上的圖片（可為 nil），backend 不支援時必須回 error 而不是默默丟掉。
+	Prompt(sessionID, text string, images []promptImage, rt runtimeOverrides) (turnID string, err error)
 	Cancel(sessionID, turnID string) error
 	// ResolveApproval 以 optionID 回覆 EvApprovalRequest；optionID 必須取自該 request 的 Options。
 	ResolveApproval(reqID, optionID string) error
@@ -54,6 +55,8 @@ type Capabilities struct {
 	Rename         bool
 	Archive        bool
 	Delete         bool
+	// ImagePrompt 表示 Prompt 可附圖片（ACP 的 promptCapabilities.image、codex 的 localImage）。
+	ImagePrompt bool
 	// SlashCatalog 為 "static"（Lumen 內建 catalog）或 "dynamic"（backend 推送）。
 	SlashCatalog string
 }

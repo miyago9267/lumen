@@ -231,7 +231,7 @@ func (a *fakeACPAgent) initialize(message fakeACPMessage) {
 		"agentCapabilities": map[string]any{
 			"loadSession":         a.hasCap("load"),
 			"sessionCapabilities": sessionCaps,
-			"promptCapabilities":  map[string]any{"image": false},
+			"promptCapabilities":  map[string]any{"image": a.hasCap("image")},
 		},
 		"authMethods": authMethods,
 	})
@@ -725,7 +725,7 @@ func isTurnCompleted(event Event) bool {
 // runTurn 送出 prompt 並收集到 EvTurnCompleted 為止的 events。
 func (r *fakeACPRun) runTurn(t *testing.T, sessionID, text string) []Event {
 	t.Helper()
-	if _, err := r.backend.Prompt(sessionID, text, runtimeOverrides{}); err != nil {
+	if _, err := r.backend.Prompt(sessionID, text, nil, runtimeOverrides{}); err != nil {
 		t.Fatalf("Prompt(%q) error = %v", text, err)
 	}
 	return eventsUntil(t, r.events, isTurnCompleted)

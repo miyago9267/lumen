@@ -361,7 +361,7 @@ func lastMessage(events []Event) string {
 func TestACPPermissionSelected(t *testing.T) {
 	run := startFakeACP(t, nil, nil)
 	sid := newFakeSession(t, run)
-	if _, err := run.backend.Prompt(sid, "perm", runtimeOverrides{}); err != nil {
+	if _, err := run.backend.Prompt(sid, "perm", nil, runtimeOverrides{}); err != nil {
 		t.Fatal(err)
 	}
 	approval := firstApproval(t, run.events)
@@ -410,7 +410,7 @@ func responsesFor(t *testing.T, path string) []json.RawMessage {
 func TestACPPermissionUserCancelAndInvalidOption(t *testing.T) {
 	run := startFakeACP(t, nil, nil)
 	sid := newFakeSession(t, run)
-	if _, err := run.backend.Prompt(sid, "perm", runtimeOverrides{}); err != nil {
+	if _, err := run.backend.Prompt(sid, "perm", nil, runtimeOverrides{}); err != nil {
 		t.Fatal(err)
 	}
 	approval := firstApproval(t, run.events)
@@ -421,7 +421,7 @@ func TestACPPermissionUserCancelAndInvalidOption(t *testing.T) {
 		t.Fatalf("agent saw %q", got)
 	}
 
-	if _, err := run.backend.Prompt(sid, "perm", runtimeOverrides{}); err != nil {
+	if _, err := run.backend.Prompt(sid, "perm", nil, runtimeOverrides{}); err != nil {
 		t.Fatal(err)
 	}
 	approval = firstApproval(t, run.events)
@@ -438,7 +438,7 @@ func TestACPPermissionFailsClosed(t *testing.T) {
 	t.Run("non-interactive", func(t *testing.T) {
 		run := startFakeACP(t, nil, nil)
 		sid := newFakeSession(t, run)
-		_, _ = run.backend.Prompt(sid, "perm", runtimeOverrides{})
+		_, _ = run.backend.Prompt(sid, "perm", nil, runtimeOverrides{})
 		approval := firstApproval(t, run.events)
 		if err := run.backend.RejectRequest(approval.ReqID, "lumen requires an interactive terminal for approval"); err != nil {
 			t.Fatal(err)
@@ -450,7 +450,7 @@ func TestACPPermissionFailsClosed(t *testing.T) {
 	t.Run("timeout", func(t *testing.T) {
 		run := startFakeACP(t, nil, func(cfg *acpConfig) { cfg.PermissionTimeout = 100 * time.Millisecond })
 		sid := newFakeSession(t, run)
-		_, _ = run.backend.Prompt(sid, "perm", runtimeOverrides{})
+		_, _ = run.backend.Prompt(sid, "perm", nil, runtimeOverrides{})
 		events := eventsUntil(t, run.events, isTurnCompleted)
 		if got := lastMessage(events); got != "outcome:cancelled:" {
 			t.Fatalf("agent saw %q", got)
@@ -499,7 +499,7 @@ func TestACPPermissionFailsClosed(t *testing.T) {
 func TestACPCancelOrdersPermissionBeforeSessionCancel(t *testing.T) {
 	run := startFakeACP(t, nil, nil)
 	sid := newFakeSession(t, run)
-	turnID, err := run.backend.Prompt(sid, "permcancel", runtimeOverrides{})
+	turnID, err := run.backend.Prompt(sid, "permcancel", nil, runtimeOverrides{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -538,7 +538,7 @@ func TestACPCancelOrdersPermissionBeforeSessionCancel(t *testing.T) {
 func TestACPCancelMarksToolsAndKeepsLateUpdates(t *testing.T) {
 	run := startFakeACP(t, nil, nil)
 	sid := newFakeSession(t, run)
-	turnID, _ := run.backend.Prompt(sid, "slow", runtimeOverrides{})
+	turnID, _ := run.backend.Prompt(sid, "slow", nil, runtimeOverrides{})
 	collected := eventsUntil(t, run.events, func(event Event) bool { _, ok := event.(EvToolStarted); return ok })
 	if err := run.backend.Cancel(sid, turnID); err != nil {
 		t.Fatal(err)
@@ -564,7 +564,7 @@ func TestACPCancelMarksToolsAndKeepsLateUpdates(t *testing.T) {
 func TestACPCancelTimeoutNotice(t *testing.T) {
 	run := startFakeACP(t, map[string]string{"FAKEACP_IGNORE_CANCEL": "1"}, func(cfg *acpConfig) { cfg.CancelTimeout = 150 * time.Millisecond })
 	sid := newFakeSession(t, run)
-	turnID, _ := run.backend.Prompt(sid, "slow", runtimeOverrides{})
+	turnID, _ := run.backend.Prompt(sid, "slow", nil, runtimeOverrides{})
 	eventsUntil(t, run.events, func(event Event) bool { _, ok := event.(EvToolStarted); return ok })
 	_ = run.backend.Cancel(sid, turnID)
 	events := eventsUntil(t, run.events, func(event Event) bool {
@@ -580,7 +580,7 @@ func TestACPCancelTimeoutNotice(t *testing.T) {
 func TestACPCrashReportsConnectionLost(t *testing.T) {
 	run := startFakeACP(t, nil, nil)
 	sid := newFakeSession(t, run)
-	_, _ = run.backend.Prompt(sid, "crash", runtimeOverrides{})
+	_, _ = run.backend.Prompt(sid, "crash", nil, runtimeOverrides{})
 	events := eventsUntil(t, run.events, func(event Event) bool { _, ok := event.(EvConnectionLost); return ok })
 	lost := events[len(events)-1].(EvConnectionLost)
 	if lost.Err == nil || !strings.Contains(lost.Err.Error(), "fatal: boom") || strings.Contains(lost.Err.Error(), "SEKRIT") {
@@ -805,7 +805,7 @@ func TestACPStderrStaysOutOfEventsAndIsSummarizedOnLoss(t *testing.T) {
 	if run.backend.stderr.Len() > acpStderrMaxLines {
 		t.Fatal("stderr ring is unbounded")
 	}
-	_, _ = run.backend.Prompt(sid, "crash", runtimeOverrides{})
+	_, _ = run.backend.Prompt(sid, "crash", nil, runtimeOverrides{})
 	lost := eventsUntil(t, run.events, func(event Event) bool { _, ok := event.(EvConnectionLost); return ok })
 	text := lost[len(lost)-1].(EvConnectionLost).Err.Error()
 	if got := strings.Count(text, "stderr line"); got > acpStderrShowLines || !strings.Contains(text, "fatal: boom") {
@@ -819,11 +819,11 @@ func TestACPNeverChangesPermissionModeOrLeaksEnv(t *testing.T) {
 	t.Setenv("CLAUDE_CODE_EXECUTABLE", "/bin/false")
 	run := startFakeACP(t, nil, func(cfg *acpConfig) { cfg.SessionMeta = claudeACPConfig().SessionMeta })
 	sid := newFakeSession(t, run)
-	_, _ = run.backend.Prompt(sid, "perm", runtimeOverrides{})
+	_, _ = run.backend.Prompt(sid, "perm", nil, runtimeOverrides{})
 	approval := firstApproval(t, run.events)
 	_ = run.backend.ResolveApproval(approval.ReqID, "reject")
 	eventsUntil(t, run.events, isTurnCompleted)
-	_, _ = run.backend.Prompt(sid, "slow", runtimeOverrides{})
+	_, _ = run.backend.Prompt(sid, "slow", nil, runtimeOverrides{})
 	eventsUntil(t, run.events, func(event Event) bool { _, ok := event.(EvToolStarted); return ok })
 	_ = run.backend.Cancel(sid, "")
 	eventsUntil(t, run.events, isTurnCompleted)

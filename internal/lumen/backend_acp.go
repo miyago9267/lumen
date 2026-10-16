@@ -2,6 +2,7 @@ package lumen
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -231,7 +232,10 @@ func (b *acpBackend) open(ctx context.Context) error {
 	var result struct {
 		ProtocolVersion   int `json:"protocolVersion"`
 		AgentCapabilities struct {
-			LoadSession         bool `json:"loadSession"`
+			LoadSession        bool `json:"loadSession"`
+			PromptCapabilities struct {
+				Image bool `json:"image"`
+			} `json:"promptCapabilities"`
 			SessionCapabilities struct {
 				List   json.RawMessage `json:"list"`
 				Resume json.RawMessage `json:"resume"`
@@ -262,6 +266,7 @@ func (b *acpBackend) open(ctx context.Context) error {
 		SessionList:    b.canList,
 		SessionResume:  b.canLoad || b.canResume,
 		ReplayOnResume: b.canLoad,
+		ImagePrompt:    caps.PromptCapabilities.Image,
 		SlashCatalog:   "dynamic",
 	}
 	b.mu.Unlock()
@@ -694,8 +699,13 @@ func (b *acpBackend) ListSessions(cwd string, limit int) ([]SessionInfo, error) 
 
 // ---- prompt / cancel ----
 
-func (b *acpBackend) Prompt(sessionID, text string, rt runtimeOverrides) (string, error) {
+func (b *acpBackend) Prompt(sessionID, text string, images []promptImage, rt runtimeOverrides) (string, error) {
 	conn, err := b.connection()
+	if err != nil {
+		return "", err
+	}
+	// 在開 turn 之前同步讀檔：失敗或 agent 不收圖片時直接回 error，prompt 不送出。
+	blocks, err := b.promptBlocks(text, images)
 	if err != nil {
 		return "", err
 	}
@@ -712,17 +722,41 @@ func (b *acpBackend) Prompt(sessionID, text string, rt runtimeOverrides) (string
 	b.mu.Unlock()
 
 	b.send(EvTurnStarted{SessionID: sessionID, TurnID: turn.id})
-	go b.runPrompt(conn, turn, sessionID, text)
+	go b.runPrompt(conn, turn, sessionID, blocks)
 	return turn.id, nil
 }
 
-func (b *acpBackend) runPrompt(conn *rpcConn, turn *acpTurn, sessionID, text string) {
+// promptBlocks 組出 session/prompt 的 content blocks：text 在前，image block 在後。
+// agent 沒有宣告 promptCapabilities.image 時，附圖會被拒絕而不是默默丟掉。
+func (b *acpBackend) promptBlocks(text string, images []promptImage) ([]any, error) {
+	blocks := []any{map[string]any{"type": "text", "text": text}}
+	if len(images) == 0 {
+		return blocks, nil
+	}
+	if !b.Caps().ImagePrompt {
+		return nil, fmt.Errorf("%s does not accept images", b.cfg.Name)
+	}
+	for _, image := range images {
+		data, err := os.ReadFile(image.Path)
+		if err != nil {
+			return nil, fmt.Errorf("read image: %w", err)
+		}
+		blocks = append(blocks, map[string]any{
+			"type":     "image",
+			"mimeType": image.MIME,
+			"data":     base64.StdEncoding.EncodeToString(data),
+		})
+	}
+	return blocks, nil
+}
+
+func (b *acpBackend) runPrompt(conn *rpcConn, turn *acpTurn, sessionID string, blocks []any) {
 	var result struct {
 		StopReason string `json:"stopReason"`
 	}
 	err := conn.call(context.Background(), 0, "session/prompt", map[string]any{
 		"sessionId": sessionID,
-		"prompt":    []any{map[string]any{"type": "text", "text": text}},
+		"prompt":    blocks,
 	}, &result)
 
 	select {

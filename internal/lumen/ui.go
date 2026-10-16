@@ -67,11 +67,15 @@ const (
 	keyCtrlD
 	keyEscape
 	keyTab
+	keyCtrlV
+	keyPaste
+	keyDelete
 )
 
 type keyEvent struct {
 	typ            keyType
 	rune           rune
+	text           string // 僅 keyPaste 使用：已正規化的貼上內容
 	mouseX, mouseY int
 }
 
@@ -97,6 +101,8 @@ func readKeys(input io.Reader, keys chan<- keyEvent) {
 			keys <- keyEvent{typ: keyCtrlBackslash}
 		case 4:
 			keys <- keyEvent{typ: keyCtrlD}
+		case 22:
+			keys <- keyEvent{typ: keyCtrlV}
 		case '\r', '\n':
 			keys <- keyEvent{typ: keyEnter}
 		case 8, 127:
@@ -106,6 +112,10 @@ func readKeys(input io.Reader, keys chan<- keyEvent) {
 		case 27:
 			readEscape(reader, input, keys)
 		default:
+			// 其餘 C0 control 不是可輸入字元，直接丟棄，避免被插入 composer。
+			if value < 0x20 {
+				continue
+			}
 			keys <- keyEvent{typ: keyRune, rune: value}
 		}
 	}
@@ -137,6 +147,10 @@ func readEscape(reader *bufio.Reader, input io.Reader, keys chan<- keyEvent) {
 		}
 	}
 	sequenceValue := sequence.String()
+	if sequenceValue == "200~" {
+		keys <- keyEvent{typ: keyPaste, text: readBracketedPaste(reader)}
+		return
+	}
 	if strings.HasPrefix(sequenceValue, "<") {
 		if mouse, ok := parseSGRMouse(sequenceValue); ok {
 			keys <- mouse
@@ -145,6 +159,12 @@ func readEscape(reader *bufio.Reader, input io.Reader, keys chan<- keyEvent) {
 	}
 	if modified, ok := parseModifiedKey(sequenceValue); ok {
 		keys <- modified
+		return
+	}
+	if kitty, ok := parseKittyKey(sequenceValue); ok {
+		if kitty.typ != keyRune {
+			keys <- kitty
+		}
 		return
 	}
 	switch sequenceValue {
@@ -164,9 +184,114 @@ func readEscape(reader *bufio.Reader, input io.Reader, keys chan<- keyEvent) {
 		keys <- keyEvent{typ: keyPageUp}
 	case "6~":
 		keys <- keyEvent{typ: keyPageDown}
+	case "3~":
+		keys <- keyEvent{typ: keyDelete}
 	default:
-		keys <- keyEvent{typ: keyEscape}
+		// 未知 CSI（focus、DA 回應、未對應的 kitty key 等）一律忽略，不可當成 Esc。
 	}
+}
+
+const bracketedPasteEnd = "\x1b[201~"
+
+// readBracketedPaste 讀取 bracketed paste 內容直到結束標記或 EOF，
+// 並正規化：CRLF/CR 轉 LF、Tab 轉四個空白、其餘 C0 control 丟棄。
+func readBracketedPaste(reader *bufio.Reader) string {
+	var raw []rune
+	end := []rune(bracketedPasteEnd)
+	for {
+		value, _, err := reader.ReadRune()
+		if err != nil {
+			break
+		}
+		raw = append(raw, value)
+		if len(raw) >= len(end) && string(raw[len(raw)-len(end):]) == bracketedPasteEnd {
+			raw = raw[:len(raw)-len(end)]
+			break
+		}
+	}
+	return normalizePaste(raw)
+}
+
+// normalizePaste 正規化貼上內容：CRLF/CR 轉 LF、Tab 轉四個空白、其餘 C0 control 丟棄。
+func normalizePaste(raw []rune) string {
+	var out strings.Builder
+	for index := 0; index < len(raw); index++ {
+		switch value := raw[index]; {
+		case value == '\r':
+			if index+1 < len(raw) && raw[index+1] == '\n' {
+				index++
+			}
+			out.WriteByte('\n')
+		case value == '\n':
+			out.WriteByte('\n')
+		case value == '\t':
+			out.WriteString("    ")
+		case value < 0x20 || value == 0x7f:
+		default:
+			out.WriteRune(value)
+		}
+	}
+	return out.String()
+}
+
+// parseKittyKey 解析 kitty keyboard protocol 的 CSI-u：`code[:alternates];modifiers[:event]u`。
+// 回傳 ok 表示這是 CSI-u；typ 為 keyRune 代表已辨識但沒有對應事件（呼叫端應忽略）。
+func parseKittyKey(sequence string) (keyEvent, bool) {
+	if !strings.HasSuffix(sequence, "u") {
+		return keyEvent{}, false
+	}
+	fields := strings.Split(strings.TrimSuffix(sequence, "u"), ";")
+	if len(fields) > 3 {
+		return keyEvent{}, false
+	}
+	code, err := strconv.Atoi(strings.SplitN(fields[0], ":", 2)[0])
+	if err != nil {
+		return keyEvent{}, false
+	}
+	modifiers := 0
+	if len(fields) >= 2 {
+		parts := strings.SplitN(fields[1], ":", 2)
+		if value, err := strconv.Atoi(parts[0]); err == nil && value >= 1 {
+			modifiers = value - 1
+		}
+		// event type 3 為放開，不重複觸發。
+		if len(parts) == 2 && parts[1] == "3" {
+			return keyEvent{typ: keyRune}, true
+		}
+	}
+	// 忽略 caps lock (64) 與 num lock (128)。
+	modifiers &^= 64 | 128
+	switch modifiers {
+	case 0:
+		switch code {
+		case 27:
+			return keyEvent{typ: keyEscape}, true
+		case 13:
+			return keyEvent{typ: keyEnter}, true
+		case 9:
+			return keyEvent{typ: keyTab}, true
+		case 127:
+			return keyEvent{typ: keyBackspace}, true
+		}
+	case 4:
+		switch code {
+		case 'c':
+			return keyEvent{typ: keyCtrlC}, true
+		case 'd':
+			return keyEvent{typ: keyCtrlD}, true
+		case 'x':
+			return keyEvent{typ: keyCtrlX}, true
+		case 'o':
+			return keyEvent{typ: keyCtrlO}, true
+		case 'u':
+			return keyEvent{typ: keyCtrlU}, true
+		case 'v':
+			return keyEvent{typ: keyCtrlV}, true
+		case '\\':
+			return keyEvent{typ: keyCtrlBackslash}, true
+		}
+	}
+	return keyEvent{typ: keyRune}, true
 }
 
 func readEscapeRune(reader *bufio.Reader, input io.Reader) (rune, int, error) {
@@ -414,6 +539,13 @@ type ui struct {
 	hoverRow              int
 	selection             screenSelection
 	clipboard             func(string) error
+	readClipboard         func(dir string) (clipboardContent, error) // nil 使用 readSystemClipboard；測試注入
+	images                map[int]*imageAttachment                   // composer chip `[Image #N]` 背後的圖片，N 為 session 內遞增
+	imageSeq              int
+	imageDir              string       // 放剪貼簿圖片的 temp 目錄（lazy 建立）
+	kittyGraphics         bool         // terminal 支援 kitty graphics protocol
+	kittySent             map[int]bool // 已傳輸到 terminal 的 image id
+	kittyPlaced           int          // 目前 terminal 上有 placement 的 image id（0 = 無）
 	connectionError       string
 	connectionStatusEntry string
 	reconnectAttempt      int
@@ -442,6 +574,8 @@ func newUI(backend Backend, thread threadSummary, cwd string, fullscreen bool, o
 		out:                os.Stdout,
 		in:                 os.Stdin,
 		clipboard:          writeClipboard,
+		readClipboard:      readSystemClipboard,
+		kittyGraphics:      detectKittyGraphics(os.Getenv),
 		hoverRow:           -1,
 		corallineRenderer:  newCorallineRenderer(),
 		serverFactory:      startCodexBackend,
@@ -466,6 +600,7 @@ func (u *ui) runInline(initialPrompt string, interactive bool) error {
 		defer lifecycle.Close()
 	}
 
+	defer u.releaseImages()
 	u.renderHeader()
 	u.renderHistory()
 	var keys <-chan keyEvent
@@ -872,14 +1007,41 @@ func (u *ui) handleCtrlC() error {
 func (u *ui) editComposer(key keyEvent) bool {
 	switch key.typ {
 	case keyRune:
+		if key.rune < 0x20 {
+			return true
+		}
 		u.insertRune(key.rune)
+	case keyPaste:
+		u.insertText(key.text)
+	case keyCtrlV:
+		u.pasteClipboard()
 	case keyBackspace:
 		if u.cursor == 0 {
 			return true
 		}
+		for _, span := range u.chipSpans() {
+			if span.start < u.cursor && u.cursor <= span.end {
+				u.deleteInputRange(span.start, span.end)
+				u.renderPrompt()
+				return true
+			}
+		}
 		u.markInputEdited()
 		u.input = append(u.input[:u.cursor-1], u.input[u.cursor:]...)
 		u.cursor--
+	case keyDelete:
+		if u.cursor >= len(u.input) {
+			return true
+		}
+		for _, span := range u.chipSpans() {
+			if span.start <= u.cursor && u.cursor < span.end {
+				u.deleteInputRange(span.start, span.end)
+				u.renderPrompt()
+				return true
+			}
+		}
+		u.markInputEdited()
+		u.input = append(u.input[:u.cursor], u.input[u.cursor+1:]...)
 	case keyLeft:
 		if u.cursor > 0 {
 			u.cursor--
@@ -1022,6 +1184,18 @@ func (u *ui) insertRune(value rune) {
 	u.cursor++
 }
 
+// insertText 在游標處一次插入整段文字；呼叫端負責只 render 一次。
+func (u *ui) insertText(text string) {
+	runes := []rune(text)
+	if len(runes) == 0 {
+		return
+	}
+	u.markInputEdited()
+	tail := append([]rune(nil), u.input[u.cursor:]...)
+	u.input = append(append(u.input[:u.cursor], runes...), tail...)
+	u.cursor += len(runes)
+}
+
 func lineStart(value []rune, cursor int) int {
 	for cursor > 0 && value[cursor-1] != '\n' {
 		cursor--
@@ -1062,6 +1236,10 @@ func (u *ui) submit(value string) error {
 	if backend == nil {
 		return errors.New("app-server is reconnecting; prompt was not sent")
 	}
+	images, err := u.promptImagesFor(value)
+	if err != nil {
+		return err
+	}
 	u.showWelcome = false
 	u.clearSelection()
 	u.clearReplyTarget()
@@ -1085,7 +1263,7 @@ func (u *ui) submit(value string) error {
 	if !u.screenMode {
 		fmt.Fprintf(u.out, "%s  … working%s%s\n", muted, reset, "")
 	}
-	turnID, err := backend.Prompt(u.thread.ID, value, u.overrides)
+	turnID, err := backend.Prompt(u.thread.ID, value, images, u.overrides)
 	if err != nil {
 		u.busy = false
 		u.renderPrompt()
@@ -1480,6 +1658,11 @@ func (u *ui) handleInputRequestKey(key keyEvent) error {
 		}
 		u.insertRune(key.rune)
 		u.renderPrompt()
+	case keyPaste:
+		if !u.inputQuestionHasOptions() || u.inputOptionIsOther() {
+			u.insertText(key.text)
+			u.renderPrompt()
+		}
 	case keyBackspace:
 		if u.cursor > 0 {
 			u.input = append(u.input[:u.cursor-1], u.input[u.cursor:]...)
