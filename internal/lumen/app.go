@@ -17,7 +17,7 @@ import (
 
 const (
 	appName    = "lumen"
-	appVersion = "0.6.0"
+	appVersion = "0.7.0"
 )
 
 type options struct {
